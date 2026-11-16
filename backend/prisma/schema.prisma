@@ -1,0 +1,225 @@
+// SDS UZ dispatch CRM — database schema.
+// Table/column names are snake_case to match the API contract used by the frontend.
+// CHECK constraints that Prisma cannot express live in the migration SQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  dispatcher
+}
+
+enum DriverType {
+  company
+  owner
+}
+
+enum LoadStatus {
+  available
+  pickedup
+  delivered
+}
+
+enum Theme {
+  dark
+  light
+}
+
+enum NoticeKind {
+  password_changed
+  email_changed
+}
+
+/// Employee account (exposed to the frontend as `staff_profiles`).
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  email            String    @unique
+  passwordHash     String    @map("password_hash")
+  fullName         String    @map("full_name")
+  role             Role      @default(dispatcher)
+  isActive         Boolean   @default(true) @map("is_active")
+  avatarUrl        String?   @map("avatar_url")
+  /// Per-dispatcher fee %, null = use the company-wide % from settings.
+  fullPct          Decimal?  @map("full_pct") @db.Decimal(5, 2)
+  partialPct       Decimal?  @map("partial_pct") @db.Decimal(5, 2)
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz(3)
+  isTest           Boolean   @default(false) @map("is_test")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions      Session[]
+  drivers       Driver[]
+  assignedLoads Load[]
+  loadHistory   LoadHistory[]
+  notes         CalendarNote[]
+  activity      ActivityLog[]
+  notices       AdminNotice[]
+  customCities  CustomCity[]
+
+  @@index([role, isActive])
+  @@map("users")
+}
+
+/// Refresh-token session. Only a SHA-256 hash of the token is stored.
+model Session {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt DateTime  @default(now()) @map("last_used_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// Company-wide settings: exactly one row with id = 1.
+model Settings {
+  id             Int      @id @default(1)
+  fullPct        Decimal  @default(2) @map("full_pct") @db.Decimal(5, 2)
+  partialPct     Decimal  @default(3) @map("partial_pct") @db.Decimal(5, 2)
+  dispatcherName String   @default("") @map("dispatcher_name")
+  avatarUrl      String?  @map("avatar_url")
+  theme          Theme    @default(dark)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("settings")
+}
+
+model Driver {
+  id           String     @id @default(uuid()) @db.Uuid
+  firstName    String     @map("first_name")
+  lastName     String     @map("last_name")
+  truckNumber  String     @map("truck_number")
+  type         DriverType @default(company)
+  dispatcherId String?    @map("dispatcher_id") @db.Uuid
+  isTest       Boolean    @default(false) @map("is_test")
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  dispatcher User?  @relation(fields: [dispatcherId], references: [id], onDelete: SetNull)
+  loads      Load[]
+
+  @@index([dispatcherId])
+  @@index([createdAt])
+  @@map("drivers")
+}
+
+model Load {
+  id               String     @id @default(uuid()) @db.Uuid
+  loadNumber       String     @unique @map("load_number")
+  isPartial        Boolean    @default(false) @map("is_partial")
+  /// Partial loads point at their full (parent) load by load number.
+  parentLoadNumber String?    @map("parent_load_number")
+  driverId         String?    @map("driver_id") @db.Uuid
+  fromCity         String?    @map("from_city")
+  toCity           String?    @map("to_city")
+  status           LoadStatus @default(available)
+  pickupDate       DateTime?  @map("pickup_date") @db.Date
+  deliveryDate     DateTime?  @map("delivery_date") @db.Date
+  total            Decimal    @default(0) @db.Decimal(12, 2)
+  assignedTo       String?    @map("assigned_to") @db.Uuid
+  isTest           Boolean    @default(false) @map("is_test")
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  parent     Load?   @relation("LoadPartials", fields: [parentLoadNumber], references: [loadNumber], onUpdate: Cascade, onDelete: Restrict)
+  partials   Load[]  @relation("LoadPartials")
+  driver     Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  dispatcher User?   @relation(fields: [assignedTo], references: [id], onDelete: Restrict)
+
+  @@index([assignedTo])
+  @@index([driverId])
+  @@index([status])
+  @@index([pickupDate])
+  @@index([createdAt])
+  @@index([parentLoadNumber])
+  @@map("loads")
+}
+
+/// Audit trail for loads. Kept after a load is deleted, so no FK on load_id.
+model LoadHistory {
+  id        BigInt   @id @default(autoincrement())
+  loadId    String   @map("load_id") @db.Uuid
+  action    String
+  actorId   String?  @map("actor_id") @db.Uuid
+  oldRow    Json?    @map("old_row")
+  newRow    Json?    @map("new_row")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([loadId, createdAt])
+  @@map("load_history")
+}
+
+model CalendarNote {
+  id        String   @id @default(uuid()) @db.Uuid
+  noteDate  DateTime @map("note_date") @db.Date
+  noteText  String   @map("note_text")
+  createdBy String?  @map("created_by") @db.Uuid
+  isTest    Boolean  @default(false) @map("is_test")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  author User? @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([noteDate])
+  @@map("calendar_notes")
+}
+
+model CustomCity {
+  id        String   @id @default(uuid()) @db.Uuid
+  city      String
+  state     String
+  zip       String   @default("")
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  author User? @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@unique([city, state, zip])
+  @@map("custom_cities")
+}
+
+model ActivityLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actionText String   @map("action_text")
+  userEmail  String   @map("user_email")
+  userId     String?  @map("user_id") @db.Uuid
+  isTest     Boolean  @default(false) @map("is_test")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("activity_log")
+}
+
+/// Notices for administrators about employees' login/password changes.
+/// Passwords are never stored here (see README: "Assumptions").
+model AdminNotice {
+  id        String     @id @default(uuid()) @db.Uuid
+  kind      NoticeKind
+  userId    String     @map("user_id") @db.Uuid
+  fullName  String     @map("full_name")
+  oldEmail  String?    @map("old_email")
+  newEmail  String?    @map("new_email")
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@map("admin_notices")
+}

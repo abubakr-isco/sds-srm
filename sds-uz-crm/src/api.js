@@ -1,5 +1,8 @@
-// The production CRM talks only to its own server at /api. The browser-only
-// preview below is compiled into Vite development mode and is not authentication.
+// The CRM talks to its backend (backend/ in this repo) at /api, or at VITE_API_URL.
+// The browser-only preview below is used only for the static demo build
+// (VITE_DEMO=1, e.g. the Vercel demo). It keeps data in localStorage and is not authentication.
+export const PREVIEW = import.meta.env.VITE_DEMO === '1';
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 const PREVIEW_KEY = 'sds_crm_preview_v1';
 const ADMIN_ID = '10000000-0000-4000-8000-000000000001';
 const DISPATCHER_ID = '10000000-0000-4000-8000-000000000002';
@@ -325,7 +328,17 @@ async function previewRequest(path, { method = 'GET', body, accessToken } = {}) 
     if (!['admin', 'dispatcher'].includes(body.role) || typeof body.is_active !== 'boolean' || !String(body.full_name || '').trim()) throw new Error('Invalid employee data.');
     if (target.role === 'admin' && target.is_active && (body.role !== 'admin' || !body.is_active) &&
       data.staff_profiles.filter((p) => p.role === 'admin' && p.is_active).length === 1) throw new Error('Cannot remove the last active administrator.');
-    Object.assign(target, { full_name: String(body.full_name || '').trim(), role: body.role, is_active: body.is_active });
+    // Per-dispatcher fee %: a number 0–100, or null to use the company-wide % from Settings.
+    const pct = (value) => {
+      if (value === undefined || value === null || value === '') return null;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error('Percent must be between 0 and 100.');
+      return n;
+    };
+    const fullPct = pct(body.full_pct);
+    const partialPct = pct(body.partial_pct);
+    Object.assign(target, { full_name: String(body.full_name || '').trim(), role: body.role, is_active: body.is_active,
+      full_pct: fullPct, partial_pct: partialPct });
     savePreview(data);
     return { updated: true };
   }
@@ -378,16 +391,25 @@ async function previewRequest(path, { method = 'GET', body, accessToken } = {}) 
 }
 
 export async function apiRequest(path, options = {}) {
-  if (import.meta.env.DEV) return previewRequest(path, options);
+  if (PREVIEW) return previewRequest(path, options);
   const headers = { 'Content-Type': 'application/json' };
   if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
-  const response = await fetch(`/api${path}`, {
-    method: options.method || 'GET', headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: options.method || 'GET', headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+  } catch {
+    throw new Error('Cannot reach the CRM server. Check your connection and try again.');
+  }
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.message || error.error || `Request failed (${response.status})`);
+    // The API always answers errors as { statusCode, error, message, path, timestamp }.
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(body.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.code = body.error;
+    throw error;
   }
   if (response.status === 204) return null;
   if (!response.headers.get('content-type')?.includes('application/json')) {
@@ -404,4 +426,5 @@ export const apiTable = (table, accessToken) => ({
 });
 export const authSignIn = (email, password) => apiRequest('/auth/login', { method: 'POST', body: { email, password } });
 export const updateAccount = (accessToken, changes) => apiRequest('/account/update', { method: 'POST', body: changes, accessToken });
+export const authLogout = (accessToken) => (PREVIEW ? Promise.resolve(null) : apiRequest('/auth/logout', { method: 'POST', body: {}, accessToken }));
 export const authRefresh = (refreshToken) => apiRequest('/auth/refresh', { method: 'POST', body: { refresh_token: refreshToken } });

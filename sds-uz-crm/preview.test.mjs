@@ -15,7 +15,7 @@ test('local preview dispatcher can claim a load but cannot edit settings or staf
   const compiled = await build({
     stdin: { contents: source, sourcefile: 'api.js', loader: 'js' },
     bundle: true, write: false, format: 'esm', platform: 'browser',
-    define: { 'import.meta.env.DEV': 'true' },
+    define: { 'import.meta.env': JSON.stringify({ VITE_DEMO: '1', DEV: true }) },
   });
   const { apiRequest, apiTable, authSignIn, updateAccount } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 
@@ -155,7 +155,7 @@ test('empty local preview fills itself with test loads once', async () => {
   const compiled = await build({
     stdin: { contents: source, sourcefile: 'api.js', loader: 'js' },
     bundle: true, write: false, format: 'esm', platform: 'browser',
-    define: { 'import.meta.env.DEV': 'true' },
+    define: { 'import.meta.env': JSON.stringify({ VITE_DEMO: '1', DEV: true }) },
   });
   const { apiRequest, apiTable, authSignIn } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
   const admin = await authSignIn('admin@sds.local', 'Admin2026!');

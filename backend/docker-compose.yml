@@ -1,0 +1,21 @@
+# Local PostgreSQL for development and tests. Credentials here are for local use only.
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sds
+      POSTGRES_PASSWORD: sds_local_password
+      POSTGRES_DB: sds_crm
+    ports:
+      - "5432:5432"
+    volumes:
+      - sds_pgdata:/var/lib/postgresql/data
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sds -d sds_crm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  sds_pgdata:

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { apiRequest, apiTable, authSignIn, authRefresh, updateAccount, TEST_PASSWORD } from './api.js';
+import { apiRequest, apiTable, authSignIn, authRefresh, authLogout, updateAccount, TEST_PASSWORD, PREVIEW } from './api.js';
 import {
   LayoutDashboard, Package, Users, Wallet, CalendarDays, Truck,
   Plus, Pencil, Trash2, X, Settings as SettingsIcon, Search, CornerDownRight,
@@ -229,6 +229,16 @@ function PeriodSelector({ period, setPeriod, customStart, setCustomStart, custom
 // DASHBOARD PAGE
 // ---------------------------------------------------------------------------
 
+// Fee % for a dispatcher: their own value if the admin set one, else the company-wide %.
+function dispatcherPct(employees, userId, settings) {
+  const p = (employees || []).find((e) => e.user_id === userId);
+  const own = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+  return {
+    full: own(p?.full_pct) ?? settings.fullPct,
+    partial: own(p?.partial_pct) ?? settings.partialPct,
+  };
+}
+
 function Dashboard({ loads, drivers, settings, role, employees }) {
   // SVG presentation attributes cannot read CSS variables, so chart colors are picked per theme.
   const chart = settings.theme === 'light'
@@ -276,11 +286,17 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
       else partial += l.total;
     });
     const monthlyGross = gross + partial;
-    const fullFee = gross * (settings.fullPct / 100);
-    const partialFee = partial * (settings.partialPct / 100);
+    // Each load's fee uses its dispatcher's own % (set by the admin on Employees),
+    // falling back to the company-wide % from Settings.
+    let fullFee = 0, partialFee = 0;
+    periodLoads.forEach((l) => {
+      const pct = dispatcherPct(employees, l.assignedTo || driverById[l.driverId]?.dispatcherId, settings);
+      if (!l.isPartial) fullFee += l.total * (pct.full / 100);
+      else partialFee += l.total * (pct.partial / 100);
+    });
     const totalEarnings = fullFee + partialFee;
     return { monthlyGross, gross, partial, fullFee, partialFee, totalEarnings };
-  }, [periodLoads, settings]);
+  }, [periodLoads, settings, employees, driverById]);
 
   const counts = useMemo(() => {
     let fullCount = 0, partialCount = 0;
@@ -1631,7 +1647,8 @@ function Loads({ loads, setLoads, drivers, customCities, setCustomCities, employ
         logActivity(`Edited load ${form.loadNumber}`);
       } else {
         const [created] = await table.insert(row);
-        setLoads([...loads, loadFromDb(created)]);
+        setLoads([loadFromDb(created), ...loads]); // newest load first
+        setPage(1);
         logActivity(`Added ${form.isPartial ? 'partial' : 'full'} load ${form.loadNumber}`);
       }
       setModalOpen(false);
@@ -2490,7 +2507,7 @@ function AccountSettings({ profile, accessToken, onUpdated, logActivity }) {
       if (avatarChanged) logActivity('Updated profile picture');
       setCurrentPassword(''); setNewPassword(''); setConfirmPassword('');
       setMessage(newPassword && profile.role !== 'admin'
-        ? 'Saved. The administrator has been sent your new password.'
+        ? (PREVIEW ? 'Saved. The administrator has been sent your new password.' : 'Saved. The administrator has been notified that you changed your password.')
         : 'Saved.');
     } catch (e) {
       setError(e.message || 'Could not update account.');
@@ -2554,14 +2571,14 @@ function TestDataPanel({ accessToken, onChanged }) {
     try {
       const result = await apiRequest('/dev/test-data', { method: 'POST', body: { action }, accessToken });
       setMessage(action === 'clear' ? 'Test data removed.'
-        : `Added ${result.loads} loads, ${result.drivers} drivers, ${result.notes} notes. Test dispatchers: ${result.dispatchers.join(', ')} (password ${TEST_PASSWORD}).`);
+        : `Added ${result.loads} loads, ${result.drivers} drivers, ${result.notes} notes. Test dispatchers: ${result.dispatchers.join(', ')} (password ${PREVIEW ? TEST_PASSWORD : 'TEST_DATA_PASSWORD from backend/.env'}).`);
       onChanged();
     } catch (e) { setMessage(e.message || 'Could not update test data.'); }
     finally { setBusy(false); }
   };
   return (
     <div className="settings-list" style={{ marginTop: 24 }}>
-      <h3>Test data (local preview)</h3>
+      <h3>Test data ({PREVIEW ? 'local preview' : 'development'})</h3>
       <span className="field-hint">Adds sample dispatchers, trucks, loads (TEST-…) and calendar notes. “Fill” replaces earlier test data; your own records are not touched.</span>
       <div className="settings-save-row">
         <button className="btn-primary" disabled={busy} onClick={() => run('fill')}>Fill test data</button>
@@ -2655,7 +2672,7 @@ function SettingsPage({ settings, setSettings, onSave, accessToken, profile, onP
           {error && <span className="field-error">{error}</span>}
         </div>
       </div>}
-      {profile.role === 'admin' && import.meta.env.DEV && <TestDataPanel accessToken={accessToken} onChanged={onDataChanged} />}
+      {profile.role === 'admin' && (PREVIEW || import.meta.env.DEV) && <TestDataPanel accessToken={accessToken} onChanged={onDataChanged} />}
     </div>
   );
 }
@@ -2726,7 +2743,12 @@ function CredentialNotices({ notices, accessToken, onChanged }) {
     <h3>Login & password changes</h3>
     {notices.map((n) => <div className="field-row" key={n.id} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 14 }}>
       <label>{n.full_name} · {new Date(n.created_at).toLocaleString()}</label>
-      {n.kind === 'password_changed'
+      {n.kind === 'password_changed' && !n.new_password
+        ? <div className="avatar-upload-row">
+            <span>Changed the password for <b>{n.new_email}</b>. You can set a new one under Team → New password.</span>
+            <button className="btn-ghost" onClick={() => dismiss(n.id)}>Dismiss</button>
+          </div>
+        : n.kind === 'password_changed'
         ? <div className="avatar-upload-row">
             <span>New password for <b>{n.new_email}</b>:</span>
             <code>{revealed[n.id] ? n.new_password : '••••••••'}</code>
@@ -2743,7 +2765,7 @@ function CredentialNotices({ notices, accessToken, onChanged }) {
   </div>;
 }
 
-function EmployeesPage({ employees, notices, accessToken, onChanged }) {
+function EmployeesPage({ employees, notices, settings, accessToken, onChanged }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState('dispatcher');
@@ -2757,9 +2779,11 @@ function EmployeesPage({ employees, notices, accessToken, onChanged }) {
     try {
       await apiRequest('/staff/manage', { method: 'POST', body: payload, accessToken });
       setMessage(payload.action === 'invite'
-        ? (import.meta.env.DEV ? `Account created. ${payload.email} can sign in with the temporary password.` : 'Invitation sent.')
+        ? `Account created. ${payload.email} can sign in with the temporary password.`
         : 'Employee updated.');
       if (payload.action === 'invite') { setEmail(''); setFullName(''); setPassword(''); }
+      // Saved employees are re-read from the server; drop the local draft (and any typed password).
+      else setDrafts((current) => { const next = { ...current }; delete next[payload.user_id]; return next; });
       onChanged();
     } catch (error) { setMessage(error.message || 'Could not save employee.'); }
     finally { setBusy(false); }
@@ -2773,10 +2797,10 @@ function EmployeesPage({ employees, notices, accessToken, onChanged }) {
       <div className="field-row"><label>Full name</label><input value={fullName} onChange={(e) => setFullName(e.target.value)} /></div>
       <div className="field-row"><label>Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
       <div className="field-row"><label>Role</label><select value={role} onChange={(e) => setRole(e.target.value)}><option value="dispatcher">Dispatcher</option><option value="admin">Administrator</option></select></div>
-      {import.meta.env.DEV && <div className="field-row"><label>Temporary password</label><input type="text" value={password} autoComplete="off" placeholder="At least 8 characters" onChange={(e) => setPassword(e.target.value)} /></div>}
-      <button className="btn-primary" disabled={busy || !email || !fullName.trim() || (import.meta.env.DEV && password.length < 8)}
-        onClick={() => save({ action: 'invite', email: email.trim(), full_name: fullName.trim(), role, ...(import.meta.env.DEV ? { password } : {}) })}>
-        {import.meta.env.DEV ? 'Create account' : 'Send invitation'}
+      {<div className="field-row"><label>Temporary password</label><input type="text" value={password} autoComplete="off" placeholder="At least 8 characters" onChange={(e) => setPassword(e.target.value)} /></div>}
+      <button className="btn-primary" disabled={busy || !email || !fullName.trim() || password.length < 8}
+        onClick={() => save({ action: 'invite', email: email.trim(), full_name: fullName.trim(), role, password })}>
+        Create account
       </button>
       {message && <span className="field-hint">{message}</span>}
     </div>
@@ -2790,8 +2814,24 @@ function EmployeesPage({ employees, notices, accessToken, onChanged }) {
           <select value={draft.role} onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, role: e.target.value } })}>
             <option value="dispatcher">Dispatcher</option><option value="admin">Administrator</option>
           </select>
+          {draft.role === 'dispatcher' && <div style={{ display: 'flex', gap: 10 }}>
+            <label style={{ flex: 1 }}>% for Full Loads
+              <input type="number" min="0" max="100" step="0.1" value={draft.full_pct ?? ''}
+                placeholder={`Company: ${settings.fullPct}`}
+                onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, full_pct: e.target.value } })} />
+            </label>
+            <label style={{ flex: 1 }}>% for Partial Loads
+              <input type="number" min="0" max="100" step="0.1" value={draft.partial_pct ?? ''}
+                placeholder={`Company: ${settings.partialPct}`}
+                onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, partial_pct: e.target.value } })} />
+            </label>
+          </div>}
+          {!PREVIEW && <input type="text" autoComplete="off" placeholder="New password (optional, at least 8 characters)" value={draft.new_password || ''}
+            onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, new_password: e.target.value } })} />}
           <label><input type="checkbox" checked={draft.is_active} onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, is_active: e.target.checked } })} /> Active</label>
-          <button className="btn-ghost" disabled={busy} onClick={() => save({ action: 'update', user_id: employee.user_id, full_name: draft.full_name, role: draft.role, is_active: draft.is_active })}>Save</button>
+          <button className="btn-ghost" disabled={busy} onClick={() => save({ action: 'update', user_id: employee.user_id, full_name: draft.full_name, role: draft.role, is_active: draft.is_active,
+            ...(draft.role === 'dispatcher' ? { full_pct: draft.full_pct ?? null, partial_pct: draft.partial_pct ?? null } : {}),
+            ...(draft.new_password ? { new_password: draft.new_password } : {}) })}>Save</button>
         </div>;
       })}
     </div>
@@ -2840,9 +2880,11 @@ function AuthScreen({ onAuthenticated, accessError }) {
         <button className="btn-primary auth-submit" disabled={loading} onClick={handleSubmit}>
           {loading ? 'Please wait…' : 'Sign in'}
         </button>
-        <span className="field-hint">{import.meta.env.DEV
+        <span className="field-hint">{PREVIEW
           ? 'Local preview: admin@sds.local / Admin2026!, dispatcher@sds.local / Dispatch2026!. Test dispatchers (aziz@, bekzod@, dilnoza@sds.local / Test2026!) appear after admin clicks Settings → Fill test data.'
-          : 'Ask your administrator for an account.'}</span>
+          : import.meta.env.DEV
+            ? 'Development: sign in with the seed accounts from backend/.env (SEED_ADMIN_EMAIL, SEED_DISPATCHER_EMAIL).'
+            : 'Ask your administrator for an account.'}</span>
       </div>
     </div>
   );
@@ -2853,7 +2895,7 @@ function AuthScreen({ onAuthenticated, accessError }) {
 // ---------------------------------------------------------------------------
 
 export default function DispatchCRM() {
-  const sessionKey = import.meta.env.DEV ? 'sds_preview_session' : 'sds_session';
+  const sessionKey = PREVIEW ? 'sds_preview_session' : 'sds_session';
   const [active, setActive] = useState('dashboard');
   const [session, setSession] = useState(null);
   const [sessionChecked, setSessionChecked] = useState(false);
@@ -2868,6 +2910,13 @@ export default function DispatchCRM() {
   const [calendarNotes, setCalendarNotes] = useState({});
   const [activityLog, setActivityLog] = useState([]);
   const [adminNotices, setAdminNotices] = useState([]);
+  // Server data status: shown as a banner above every page.
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const reportLoadError = (what, e) => {
+    console.error(`Failed to load ${what}`, e);
+    setLoadError(`Could not load ${what}: ${e?.message || 'unknown error'}`);
+  };
   const [settings, setSettings] = useState({
     fullPct: 2,
     partialPct: 3,
@@ -2892,7 +2941,10 @@ export default function DispatchCRM() {
   };
 
   const handleLogout = () => {
+    if (session?.accessToken) authLogout(session.accessToken).catch(() => { /* session may already be gone */ });
     setProfile(null);
+    setDataLoaded(false);
+    setLoadError('');
     setProfileChecked(false);
     setLoads([]);
     setDrivers([]);
@@ -2974,7 +3026,10 @@ export default function DispatchCRM() {
           setProfile(current);
           if (current.role !== 'admin' && active === 'employees') setActive('dashboard');
         }
-      }).catch((error) => console.error('Could not refresh account access', error));
+      }).catch((error) => {
+        if (error?.status === 401 && sessionRef.current) { refreshSession(sessionRef.current); return; }
+        console.error('Could not refresh account access', error);
+      });
   }, [syncTick]);
 
   useEffect(() => {
@@ -2984,7 +3039,7 @@ export default function DispatchCRM() {
         const rows = await apiTable('drivers', session.accessToken).list('select=*&order=created_at.asc');
         setDrivers(rows.map(driverFromDb));
       } catch (e) {
-        console.error('Failed to load drivers', e);
+        reportLoadError('drivers', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3005,7 +3060,7 @@ export default function DispatchCRM() {
           });
         }
       } catch (e) {
-        console.error('Failed to load settings', e);
+        reportLoadError('settings', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3014,10 +3069,12 @@ export default function DispatchCRM() {
     if (!session || !profile) return;
     (async () => {
       try {
-        const rows = await apiTable('loads', session.accessToken).list('select=*&order=created_at.asc');
+        const rows = await apiTable('loads', session.accessToken).list('select=*&order=created_at.desc'); // newest loads first
         setLoads(rows.map(loadFromDb));
+        setDataLoaded(true);
+        setLoadError('');
       } catch (e) {
-        console.error('Failed to load loads', e);
+        reportLoadError('loads', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3034,7 +3091,7 @@ export default function DispatchCRM() {
         });
         setCalendarNotes(grouped);
       } catch (e) {
-        console.error('Failed to load calendar notes', e);
+        reportLoadError('calendar notes', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3046,7 +3103,7 @@ export default function DispatchCRM() {
         const rows = await apiTable('custom_cities', session.accessToken).list('select=*&order=created_at.asc');
         setCustomCities(rows.map((r) => ({ city: r.city, state: r.state, zip: r.zip })));
       } catch (e) {
-        console.error('Failed to load custom cities', e);
+        reportLoadError('custom cities', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3058,7 +3115,7 @@ export default function DispatchCRM() {
         const rows = await apiTable('activity_log', session.accessToken).list('select=*&order=created_at.desc&limit=50');
         setActivityLog(rows.map((r) => ({ id: r.id, text: r.action_text, user: r.user_email, time: new Date(r.created_at) })));
       } catch (e) {
-        console.error('Failed to load activity log', e);
+        reportLoadError('activity log', e);
       }
     })();
   }, [session, profile, syncTick]);
@@ -3067,7 +3124,7 @@ export default function DispatchCRM() {
     if (!session || profile?.role !== 'admin') { setAdminNotices([]); return; }
     apiTable('admin_notices', session.accessToken).list('select=*&order=created_at.desc')
       .then(setAdminNotices)
-      .catch((error) => console.error('Failed to load admin notices', error));
+      .catch((error) => reportLoadError('admin notices', error));
   }, [session, profile, syncTick]);
 
   const handleProfileUpdated = (next) => {
@@ -3083,7 +3140,7 @@ export default function DispatchCRM() {
     if (!session || !profile) return;
     apiTable('staff_profiles', session.accessToken).list('select=*&order=created_at.asc')
       .then(setEmployees)
-      .catch((error) => console.error('Failed to load employees', error));
+      .catch((error) => reportLoadError('employees', error));
   }, [session, profile, syncTick]);
 
   const logActivity = (text) => {
@@ -4115,13 +4172,17 @@ export default function DispatchCRM() {
             <div className="topbar">
               <NotificationBell log={activityLog} />
             </div>
+            {loadError && <div className="field-error" role="alert" style={{ margin: '0 0 12px' }}>
+              {loadError} <button className="btn-ghost" onClick={() => { setLoadError(''); setSyncTick((v) => v + 1); }}>Retry</button>
+            </div>}
+            {!dataLoaded && !loadError && <div className="field-hint" role="status" style={{ margin: '0 0 12px' }}>Loading data…</div>}
             {active === 'dashboard' && <Dashboard loads={loads} drivers={drivers} settings={settings} role={profile.role} employees={employees} />}
             {active === 'loads' && <Loads loads={loads} setLoads={setLoads} drivers={drivers} customCities={customCities} setCustomCities={setCustomCities} employees={employees} role={profile.role} userId={session.userId} logActivity={logActivity} accessToken={session.accessToken} />}
             {active === 'drivers' && <Drivers drivers={drivers} setDrivers={setDrivers} logActivity={logActivity} accessToken={session.accessToken} role={profile.role} userId={session.userId} employees={employees} />}
             {active === 'salary' && <Salary loads={loads} drivers={drivers} role={profile.role} employees={employees} />}
             {active === 'calendar' && <Calendar calendarNotes={calendarNotes} setCalendarNotes={setCalendarNotes} logActivity={logActivity} accessToken={session.accessToken} userId={session.userId} />}
             {active === 'settings' && <SettingsPage settings={settings} setSettings={setSettings} onSave={() => logActivity('Updated settings')} accessToken={session.accessToken} profile={profile} onProfileUpdated={handleProfileUpdated} logActivity={logActivity} onDataChanged={() => setSyncTick((value) => value + 1)} />}
-            {active === 'employees' && profile.role === 'admin' && <EmployeesPage employees={employees} notices={adminNotices} accessToken={session.accessToken} onChanged={() => setSyncTick((value) => value + 1)} />}
+            {active === 'employees' && profile.role === 'admin' && <EmployeesPage employees={employees} notices={adminNotices} settings={settings} accessToken={session.accessToken} onChanged={() => setSyncTick((value) => value + 1)} />}
             {active !== 'dashboard' && active !== 'loads' && active !== 'drivers' && active !== 'salary' && active !== 'calendar' && active !== 'settings' && active !== 'employees' && (
               <Placeholder label={navItems.find(n => n.id === active).label} />
             )}
