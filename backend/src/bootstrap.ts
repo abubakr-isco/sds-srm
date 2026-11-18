@@ -10,7 +10,7 @@ export async function createApp(options: NestApplicationOptions = {}): Promise<{
   const config = loadConfig();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false, ...options });
   app.useBodyParser('json', { limit: '2mb' });
-  app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
+  app.set('trust proxy', trustProxySetting(process.env.TRUST_PROXY));
   app.set('query parser', 'simple');
   app.disable('x-powered-by');
   app.use(helmet());
@@ -23,4 +23,11 @@ export async function createApp(options: NestApplicationOptions = {}): Promise<{
   });
   app.enableShutdownHooks();
   return { app, config };
+}
+
+/** TRUST_PROXY: "true" = one proxy in front, a number = that many proxies, anything else = none. */
+export function trustProxySetting(value: string | undefined): number | false {
+  if (value === 'true') return 1;
+  const hops = Number(value);
+  return Number.isInteger(hops) && hops > 0 ? hops : false;
 }

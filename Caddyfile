@@ -1,0 +1,6 @@
+# HTTPS entry point. Caddy obtains and renews the certificate for SITE_DOMAIN automatically.
+{$SITE_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy web:80
+}

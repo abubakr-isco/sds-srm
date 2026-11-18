@@ -38,11 +38,16 @@ To change the schema later: edit `prisma/schema.prisma`, then `npm run db:migrat
 
 ### With Docker (one server)
 
-`docker-compose.prod.yml` in the repo root runs PostgreSQL, applies migrations, starts the API, and serves the
-frontend with nginx, which proxies `/api` to the API (one origin, so no CORS setup is needed).
+`docker-compose.prod.yml` in the repo root runs PostgreSQL, applies migrations, starts the API, serves the
+frontend with nginx (which proxies `/api` to the API, so there is one origin and no CORS setup), and puts
+Caddy in front for HTTPS with an automatic Let's Encrypt certificate.
+
+1. DNS: add an A record for the site (for `srm.sdsuz-inc.com`: host `srm`, value = the server's IPv4).
+2. On the server (Docker installed, ports 80 and 443 open):
 
 ```bash
-cp .env.production.example .env.production      # set POSTGRES_PASSWORD and JWT_SECRET
+git clone https://github.com/abubakr-isco/sds-srm.git && cd sds-srm
+cp .env.production.example .env.production      # set POSTGRES_PASSWORD, JWT_SECRET, SITE_DOMAIN
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
 
 # First administrator (once):
@@ -51,10 +56,15 @@ docker compose -f docker-compose.prod.yml --env-file .env.production run --rm \
   migrate npm run create-admin
 ```
 
-The site listens on `WEB_PORT` (default 8080). Put HTTPS in front of it (Caddy, nginx with Let's Encrypt,
-Cloudflare, or your host's load balancer). To release a new version: `git pull`, then the same `up -d --build`;
-migrations run before the API starts. Back up the database with
-`docker compose -f docker-compose.prod.yml exec db pg_dump -U sds sds_crm > backup.sql`.
+To release a new version: `git pull`, then the same `up -d --build`; migrations run before the API starts.
+Back up the database with
+`docker compose -f docker-compose.prod.yml --env-file .env.production exec db pg_dump -U sds sds_crm > backup.sql`.
+
+**Server that already runs nginx (current production, srm.sdsuz-inc.com):** copy the project to the server and
+run `sudo bash deploy/server-setup.sh`. It installs Docker if needed, creates `.env.production` with random
+secrets on first run (root-only), starts the stack on `127.0.0.1:8081`, adds one nginx site from
+`deploy/nginx-srm*.conf` (checked with `nginx -t`) and gets the certificate with `certbot --webroot`. Run it again
+for each release; it keeps the database and secrets. On an empty server use `--profile caddy` instead.
 
 Note: `sds-uz-crm/vercel.json` builds the browser-only demo (`VITE_DEMO=1`, data in localStorage). It is not
 the production app.
@@ -73,7 +83,8 @@ npm start
 - `ENABLE_TEST_DATA` is ignored when `NODE_ENV=production` (the endpoint answers 404).
 - Serve the frontend build and the API from one origin (reverse proxy `/api` → this service), or build the
   frontend with `VITE_API_URL=https://api.example.com/api` and list the frontend origin in `CORS_ORIGINS`.
-- Behind a reverse proxy set `TRUST_PROXY=true` so the per-IP sign-in limit sees real client IPs.
+- Behind a reverse proxy set `TRUST_PROXY=true` (or the number of proxies, e.g. `2` for Caddy + nginx) so the
+  per-IP sign-in limit sees real client IPs.
 - Run behind HTTPS. Secrets live only in environment variables; `.env` is git-ignored.
 
 ## Environment variables
