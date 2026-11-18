@@ -4,11 +4,8 @@ import { apiRequest, apiTable, authSignIn, authRefresh, authLogout, updateAccoun
 import {
   LayoutDashboard, Package, Users, Wallet, CalendarDays, Truck,
   Plus, Pencil, Trash2, X, Settings as SettingsIcon, Search, CornerDownRight,
-  ChevronLeft, ChevronRight, Bell, Download, AlertTriangle, LogOut, ArrowRightLeft
+  ChevronLeft, ChevronRight, Bell, Download, AlertTriangle, LogOut, ArrowRightLeft, Menu
 } from 'lucide-react';
-import {
-  BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid
-} from 'recharts';
 
 // Field-name mapping helpers between the JS (camelCase) Load shape used
 // throughout the UI and the snake_case columns in the `loads` table.
@@ -142,7 +139,7 @@ const currency = (n) =>
 // UI PRIMITIVES
 // ---------------------------------------------------------------------------
 
-function Sidebar({ active, onSelect, dispatcherName, avatarUrl, role, onLogout }) {
+function Sidebar({ active, onSelect, dispatcherName, avatarUrl, role, onLogout, open, onClose }) {
   const initials = dispatcherName
     .split(' ')
     .map((p) => p[0])
@@ -151,10 +148,13 @@ function Sidebar({ active, onSelect, dispatcherName, avatarUrl, role, onLogout }
     .toUpperCase();
 
   return (
-    <aside className="sidebar">
+    <>
+    <div className={`sidebar-backdrop ${open ? 'sidebar-backdrop--open' : ''}`} onClick={onClose} aria-hidden="true" />
+    <aside className={`sidebar ${open ? 'sidebar--open' : ''}`} id="app-sidebar">
       <div className="brand">
         <Truck size={20} strokeWidth={2.2} />
         <span>SDS UZ INC</span>
+        <button className="sidebar-close" onClick={onClose} aria-label="Close menu"><X size={18} /></button>
       </div>
       <nav>
         {navItems.filter((item) => role === 'admin' || item.id !== 'employees').map((item) => {
@@ -165,7 +165,7 @@ function Sidebar({ active, onSelect, dispatcherName, avatarUrl, role, onLogout }
               {item.id === 'settings' && <div className="nav-divider" />}
               <button
                 className={`nav-item ${isActive ? 'nav-item--active' : ''}`}
-                onClick={() => onSelect(item.id)}
+                onClick={() => { onSelect(item.id); onClose(); }}
               >
                 <Icon size={17} strokeWidth={2} />
                 <span>{item.label}</span>
@@ -187,6 +187,7 @@ function Sidebar({ active, onSelect, dispatcherName, avatarUrl, role, onLogout }
         </button>
       </div>
     </aside>
+    </>
   );
 }
 
@@ -240,14 +241,11 @@ function dispatcherPct(employees, userId, settings) {
 }
 
 function Dashboard({ loads, drivers, settings, role, employees }) {
-  // SVG presentation attributes cannot read CSS variables, so chart colors are picked per theme.
-  const chart = settings.theme === 'light'
-    ? { grid: '#E2E8F0', axis: '#475569', bar: '#2563EB' }
-    : { grid: '#283548', axis: '#8B9BB3', bar: '#60A5FA' };
   const [period, setPeriod] = useState('thisMonth');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [driverFilter, setDriverFilter] = useState('all');
+  const [dispatcherFilter, setDispatcherFilter] = useState('all');
 
   const { start, end } = useMemo(
     () => getPeriodRange(period, customStart, customEnd),
@@ -265,9 +263,20 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
   // Dispatchers only receive their own drivers, so their dashboard counts only
   // loads on their own trucks (shared-pool loads on other trucks are left out).
   const isAdmin = role === 'admin';
-  const scopedLoads = useMemo(
-    () => (isAdmin ? loads : loads.filter((l) => driverById[l.driverId])),
-    [loads, driverById, isAdmin]
+  // Admin-only dispatcher filter: a load belongs to its assigned dispatcher,
+  // falling back to the dispatcher of its truck (same rule as the fee calculation).
+  const loadDispatcherId = (l) => l.assignedTo || driverById[l.driverId]?.dispatcherId || '';
+  const scopedLoads = useMemo(() => {
+    if (!isAdmin) return loads.filter((l) => driverById[l.driverId]);
+    if (dispatcherFilter === 'all') return loads;
+    return loads.filter((l) => {
+      const id = loadDispatcherId(l);
+      return dispatcherFilter === 'none' ? !id : id === dispatcherFilter;
+    });
+  }, [loads, driverById, isAdmin, dispatcherFilter]);
+  const visibleDrivers = useMemo(
+    () => (isAdmin ? drivers.filter((d) => matchesDispatcher(d, dispatcherFilter)) : drivers),
+    [drivers, isAdmin, dispatcherFilter]
   );
 
   const periodLoads = useMemo(() => {
@@ -323,7 +332,7 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
 
   // Per-truck summary for the selected period, plus the truck's current open load.
   const truckRows = useMemo(() => {
-    return drivers
+    return visibleDrivers
       .filter((d) => driverFilter === 'all' || d.id === driverFilter)
       .map((d) => {
         const inPeriod = periodLoads.filter((l) => l.driverId === d.id);
@@ -333,12 +342,15 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
         return { driver: d, count: inPeriod.length, gross: inPeriod.reduce((sum, l) => sum + l.total, 0), open };
       })
       .sort((a, b) => b.gross - a.gross || (a.driver.truckNumber || '').localeCompare(b.driver.truckNumber || ''));
-  }, [drivers, driverFilter, periodLoads, scopedLoads]);
+  }, [visibleDrivers, driverFilter, periodLoads, scopedLoads]);
 
   const driverFilterLabel = driverFilter === 'all' ? 'All drivers' : (() => {
     const d = driverById[driverFilter];
     return d ? `${d.firstName} ${d.lastName}` : 'All drivers';
   })();
+  const dispatcherFilterLabel = dispatcherFilter === 'all' ? 'All dispatchers'
+    : dispatcherFilter === 'none' ? 'Not assigned'
+    : (staffName(employees, dispatcherFilter) || 'All dispatchers');
 
   const handleExportPdf = () => {
     const rows = [
@@ -360,7 +372,7 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
   @media print { body { padding: 24px; } }
 </style></head><body>
 <h1>SDS UZ INC — Dashboard Report</h1>
-<div class="meta">Period: ${rangeLabel} &middot; Driver: ${driverFilterLabel} &middot; Generated ${new Date().toLocaleString('en-US')}</div>
+<div class="meta">Period: ${rangeLabel}${isAdmin ? ` &middot; Dispatcher: ${dispatcherFilterLabel}` : ''} &middot; Driver: ${driverFilterLabel} &middot; Generated ${new Date().toLocaleString('en-US')}</div>
 <table>${rows.map(([l, v]) => `<tr><td>${l}</td><td>${v}</td></tr>`).join('')}</table>
 <script>window.onload = function () { window.print(); };</script>
 </body></html>`;
@@ -375,121 +387,149 @@ function Dashboard({ loads, drivers, settings, role, employees }) {
     URL.revokeObjectURL(url);
   };
 
+  // Display-only helpers for the layout below (no effect on the numbers).
+  const fullShare = stats.monthlyGross > 0 ? (stats.gross / stats.monthlyGross) * 100 : 0;
+  const onLoadCount = truckRows.filter((r) => r.open).length;
+  const pickedUpCount = truckRows.filter((r) => r.open?.status === 'pickedup').length;
+  const freeCount = truckRows.length - onLoadCount;
+  const topMax = topDrivers.length ? topDrivers[0].total : 0;
+
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
+    <div className="page dash">
+      <header className="dash-head">
+        <div className="dash-title">
           <h1>Dashboard</h1>
-          <p className="subtitle">Overview based on booked loads</p>
+          <p className="dash-range">{rangeLabel}</p>
         </div>
-        <div className="dashboard-header-right">
-          <PeriodSelector
-            period={period}
-            setPeriod={setPeriod}
-            customStart={customStart}
-            setCustomStart={setCustomStart}
-            customEnd={customEnd}
-            setCustomEnd={setCustomEnd}
-            rangeLabel={rangeLabel}
-          />
-          <button className="btn-ghost dashboard-pdf-btn" onClick={handleExportPdf}>
-            <Download size={14} /> Export PDF
-          </button>
-        </div>
+        <button className="btn-ghost dashboard-pdf-btn" onClick={handleExportPdf}>
+          <Download size={14} /> Export PDF
+        </button>
       </header>
 
-      <div className="driver-filter-row">
+      <div className="dash-filters">
+        <PeriodSelector
+          period={period}
+          setPeriod={setPeriod}
+          customStart={customStart}
+          setCustomStart={setCustomStart}
+          customEnd={customEnd}
+          setCustomEnd={setCustomEnd}
+          rangeLabel={rangeLabel}
+        />
+        {isAdmin && (
+          <DispatcherFilter
+            employees={employees || []}
+            value={dispatcherFilter}
+            onChange={(v) => { setDispatcherFilter(v); setDriverFilter('all'); }}
+          />
+        )}
         <select className="period-select" value={driverFilter} onChange={(e) => setDriverFilter(e.target.value)}>
           <option value="all">{isAdmin ? 'All drivers' : 'All my trucks'}</option>
-          {drivers.map((d) => (
+          {visibleDrivers.map((d) => (
             <option key={d.id} value={d.id}>{d.truckNumber ? `${d.truckNumber} — ` : ''}{d.firstName} {d.lastName}</option>
           ))}
         </select>
       </div>
 
-      <section className="stat-list">
-        <div className="stat-row-item">
-          <span className="stat-label">Monthly Gross</span>
-          <span className="stat-value">- {currency(stats.monthlyGross)}</span>
-        </div>
-        <div className="stat-row-item">
-          <span className="stat-label">Order</span>
-          <span className="stat-value">- {currency(stats.gross)} - {currency(stats.fullFee)}</span>
-        </div>
-        <div className="stat-row-item">
-          <span className="stat-label">Partial</span>
-          <span className="stat-value">- {currency(stats.partial)} - {currency(stats.partialFee)}</span>
-        </div>
-        <div className="stat-row-item">
-          <span className="stat-label">Total Earnings</span>
-          <span className="stat-value">- {currency(stats.totalEarnings)}</span>
-        </div>
-
-        <div className="stat-divider" />
-
-        <div className="stat-row-item">
-          <span className="stat-label">Full</span>
-          <span className="stat-value">- {counts.fullCount}</span>
-        </div>
-        <div className="stat-row-item">
-          <span className="stat-label">Partial</span>
-          <span className="stat-value">- {counts.partialCount}</span>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h3>Driver Performance</h3>
-          <span className="panel-subtitle">Top 5 by gross, selected period</span>
-        </div>
-        {topDrivers.length > 0 ? (
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={topDrivers} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                <CartesianGrid stroke={chart.grid} vertical={false} />
-                <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 12, fill: chart.axis }} axisLine={false} tickLine={false} />
-                <YAxis stroke={chart.axis} tick={{ fontSize: 12, fill: chart.axis }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 }}
-                  labelStyle={{ color: 'var(--text)' }}
-                  itemStyle={{ color: 'var(--green)' }}
-                  cursor={{ fill: 'var(--green-soft)' }}
-                  formatter={(value) => currency(value)}
-                />
-                <Bar dataKey="total" fill={chart.bar} radius={[3, 3, 0, 0]} maxBarSize={40} />
-              </BarChart>
-            </ResponsiveContainer>
+      <section className="ledger" aria-label="Gross and earnings for the selected period">
+        <div className="ledger-top">
+          <div>
+            <div className="ledger-label">Monthly gross</div>
+            <div className="ledger-gross">{currency(stats.monthlyGross)}</div>
           </div>
-        ) : (
-          <div className="empty-chart">No driver activity in this period yet.</div>
-        )}
+          <div className="ledger-earn">
+            <div className="ledger-label">Total earnings</div>
+            <div className="ledger-earn-value">{currency(stats.totalEarnings)}</div>
+          </div>
+        </div>
+
+        <div className="ledger-bar" role="img" aria-label={`Full loads ${Math.round(fullShare)}% of gross, partial ${Math.round(100 - fullShare)}%`}>
+          {stats.monthlyGross > 0 ? (
+            <>
+              <span className="ledger-bar-full" style={{ width: `${fullShare}%` }} />
+              <span className="ledger-bar-partial" style={{ width: `${100 - fullShare}%` }} />
+            </>
+          ) : <span className="ledger-bar-empty" />}
+        </div>
+
+        <div className="ledger-split">
+          <div className="ledger-part">
+            <div className="ledger-part-name"><i className="swatch swatch--full" />Order <span>{counts.fullCount} loads</span></div>
+            <div className="ledger-part-value">{currency(stats.gross)}</div>
+            <div className="ledger-part-fee">Fee {currency(stats.fullFee)}</div>
+          </div>
+          <div className="ledger-part">
+            <div className="ledger-part-name"><i className="swatch swatch--partial" />Partial <span>{counts.partialCount} loads</span></div>
+            <div className="ledger-part-value">{currency(stats.partial)}</div>
+            <div className="ledger-part-fee">Fee {currency(stats.partialFee)}</div>
+          </div>
+        </div>
       </section>
+
+      <div className="dash-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h3>Driver performance</h3>
+            <span className="panel-subtitle">Top 5 by gross</span>
+          </div>
+          {topDrivers.length > 0 ? (
+            <ol className="rank">
+              {topDrivers.map((d) => (
+                <li key={d.name} className="rank-row">
+                  <span className="rank-name">{d.name}</span>
+                  <span className="rank-track"><span className="rank-fill" style={{ width: `${topMax ? (d.total / topMax) * 100 : 0}%` }} /></span>
+                  <span className="rank-value">{currency(d.total)}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="empty-chart">No loads booked in this period.</div>
+          )}
+        </section>
+
+        <section className="panel fleet">
+          <div className="panel-header">
+            <h3>{isAdmin ? 'Fleet right now' : 'My trucks right now'}</h3>
+          </div>
+          <div className="fleet-total">{truckRows.length}<span>{truckRows.length === 1 ? 'truck' : 'trucks'}</span></div>
+          <div className="fleet-bar" aria-hidden="true">
+            {truckRows.map(({ driver, open }) => (
+              <span key={driver.id} className={`fleet-cell ${open ? `fleet-cell--${open.status}` : ''}`} />
+            ))}
+          </div>
+          <ul className="fleet-legend">
+            <li><i className="dot dot--pickedup" />Picked up<b>{pickedUpCount}</b></li>
+            <li><i className="dot dot--available" />Booked, not picked up<b>{onLoadCount - pickedUpCount}</b></li>
+            <li><i className="dot" />Free<b>{freeCount}</b></li>
+          </ul>
+        </section>
+      </div>
 
       <section className="panel">
         <div className="panel-header">
           <h3>{isAdmin ? 'Trucks' : 'My trucks'}</h3>
-          <span className="panel-subtitle">{truckRows.length} truck{truckRows.length === 1 ? '' : 's'} · loads and gross for selected period</span>
+          <span className="panel-subtitle">Loads and gross for the selected period</span>
         </div>
         {truckRows.length === 0 ? (
-          <div className="empty-chart">{isAdmin ? 'No drivers yet.' : 'No trucks are assigned to you yet. Ask the administrator to assign your drivers.'}</div>
+          <div className="empty-chart">{isAdmin ? 'No drivers yet. Add them on the Drivers page.' : 'No trucks are assigned to you yet. Ask the administrator to assign your drivers.'}</div>
         ) : (
           <div className="trucks-table">
             <div className={`trucks-row trucks-row--head ${isAdmin ? 'trucks-row--admin' : ''}`}>
-              <span>Truck #</span><span>Driver</span><span>Type</span>
+              <span>Truck</span><span>Driver</span><span>Type</span>
               {isAdmin && <span>Dispatcher</span>}
-              <span>Current load</span><span>Loads</span><span>Gross</span>
+              <span>Current load</span><span className="num">Loads</span><span className="num">Gross</span>
             </div>
             {truckRows.map(({ driver, count, gross, open }) => (
               <div className={`trucks-row ${isAdmin ? 'trucks-row--admin' : ''}`} key={driver.id}>
-                <span className="trucks-truck">{driver.truckNumber || '—'}</span>
+                <span><span className="trucks-truck">{driver.truckNumber || '—'}</span></span>
                 <span>{driver.firstName} {driver.lastName}</span>
-                <span className="trucks-muted">{driver.type === 'owner' ? 'Owner Operator' : 'Company Driver'}</span>
+                <span className="trucks-muted">{driver.type === 'owner' ? 'Owner operator' : 'Company driver'}</span>
                 {isAdmin && <span className="trucks-muted">{staffName(employees, driver.dispatcherId) || 'No dispatcher'}</span>}
                 <span>{open
-                  ? <span className={`truck-status truck-status--${open.status}`}>{open.loadNumber} · {statusLabel(open.status)}</span>
+                  ? <span className={`truck-status truck-status--${open.status}`}><i className={`dot dot--${open.status}`} />{open.loadNumber}<em>{statusLabel(open.status)}</em></span>
                   : <span className="trucks-muted">Free</span>}</span>
-                <span>{count}</span>
-                <span>{currency(gross)}</span>
+                <span className="num">{count}</span>
+                <span className="num trucks-gross">{currency(gross)}</span>
               </div>
             ))}
           </div>
@@ -2797,7 +2837,7 @@ function EmployeesPage({ employees, notices, settings, accessToken, onChanged })
       <div className="field-row"><label>Full name</label><input value={fullName} onChange={(e) => setFullName(e.target.value)} /></div>
       <div className="field-row"><label>Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
       <div className="field-row"><label>Role</label><select value={role} onChange={(e) => setRole(e.target.value)}><option value="dispatcher">Dispatcher</option><option value="admin">Administrator</option></select></div>
-      {<div className="field-row"><label>Temporary password</label><input type="text" value={password} autoComplete="off" placeholder="At least 8 characters" onChange={(e) => setPassword(e.target.value)} /></div>}
+      <div className="field-row"><label>Temporary password</label><input type="password" value={password} autoComplete="new-password" placeholder="At least 8 characters" onChange={(e) => setPassword(e.target.value)} /></div>
       <button className="btn-primary" disabled={busy || !email || !fullName.trim() || password.length < 8}
         onClick={() => save({ action: 'invite', email: email.trim(), full_name: fullName.trim(), role, password })}>
         Create account
@@ -2826,7 +2866,7 @@ function EmployeesPage({ employees, notices, settings, accessToken, onChanged })
                 onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, partial_pct: e.target.value } })} />
             </label>
           </div>}
-          {!PREVIEW && <input type="text" autoComplete="off" placeholder="New password (optional, at least 8 characters)" value={draft.new_password || ''}
+          {!PREVIEW && <input type="password" autoComplete="new-password" placeholder="New password (optional, at least 8 characters)" value={draft.new_password || ''}
             onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, new_password: e.target.value } })} />}
           <label><input type="checkbox" checked={draft.is_active} onChange={(e) => setDrafts({ ...drafts, [employee.user_id]: { ...draft, is_active: e.target.checked } })} /> Active</label>
           <button className="btn-ghost" disabled={busy} onClick={() => save({ action: 'update', user_id: employee.user_id, full_name: draft.full_name, role: draft.role, is_active: draft.is_active,
@@ -2897,6 +2937,13 @@ function AuthScreen({ onAuthenticated, accessError }) {
 export default function DispatchCRM() {
   const sessionKey = PREVIEW ? 'sds_preview_session' : 'sds_session';
   const [active, setActive] = useState('dashboard');
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setNavOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navOpen]);
   const [session, setSession] = useState(null);
   const [sessionChecked, setSessionChecked] = useState(false);
   const [profile, setProfile] = useState(null);
@@ -2940,8 +2987,8 @@ export default function DispatchCRM() {
     try { localStorage.setItem(sessionKey, JSON.stringify(sess)); } catch (e) { /* ignore */ }
   };
 
-  const handleLogout = () => {
-    if (session?.accessToken) authLogout(session.accessToken).catch(() => { /* session may already be gone */ });
+  const handleLogout = (revoke = true, clearStorage = true) => {
+    if (revoke && session?.accessToken) authLogout(session.accessToken).catch(() => { /* session may already be gone */ });
     setProfile(null);
     setDataLoaded(false);
     setLoadError('');
@@ -2951,30 +2998,71 @@ export default function DispatchCRM() {
     setCalendarNotes({});
     setActivityLog([]);
     setAdminNotices([]);
+    sessionRef.current = null;
     setSession(null);
-    try { localStorage.removeItem(sessionKey); } catch (e) { /* ignore */ }
+    if (clearStorage) try { localStorage.removeItem(sessionKey); } catch (e) { /* ignore */ }
   };
 
   // Keep a ref to the latest session so the refresh interval below always
   // refreshes with the current refresh_token, without re-triggering itself
   // every time session changes (the server may rotate refresh tokens).
   const sessionRef = useRef(session);
+  const refreshPromiseRef = useRef(null);
   useEffect(() => { sessionRef.current = session; }, [session]);
 
-  const refreshSession = async (sess) => {
-    if (!sess || !sess.refreshToken) return null;
-    try {
-      const data = await authRefresh(sess.refreshToken);
-      const next = { accessToken: data.access_token, refreshToken: data.refresh_token, email: sess.email, userId: sess.userId };
+  const refreshSession = (sess) => {
+    if (!sess?.refreshToken) return Promise.resolve(null);
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const adopt = (next, persist) => {
+      if (sessionRef.current?.userId !== next.userId) return null;
+      sessionRef.current = next;
       setSession(next);
-      try { localStorage.setItem(sessionKey, JSON.stringify(next)); } catch (e) { /* ignore */ }
+      if (persist) try { localStorage.setItem(sessionKey, JSON.stringify(next)); } catch (e) { /* ignore */ }
       return next;
-    } catch (e) {
-      // Refresh token itself is no longer valid — sign the user out cleanly.
-      handleLogout();
-      return null;
-    }
+    };
+    const storedSession = () => {
+      try { return JSON.parse(localStorage.getItem(sessionKey)); } catch { return null; }
+    };
+    const run = async () => {
+      // Another tab may have rotated the shared token while this tab waited.
+      const stored = storedSession();
+      if (stored?.userId === sess.userId && stored.refreshToken !== sess.refreshToken) return adopt(stored, false);
+      if (sessionRef.current?.userId !== sess.userId) return null;
+      const data = await authRefresh(sess.refreshToken);
+      return adopt({ accessToken: data.access_token, refreshToken: data.refresh_token, email: sess.email, userId: sess.userId }, true);
+    };
+    const pending = (async () => {
+      try {
+        // Serialise rotations across tabs; the ref also coalesces calls within this tab.
+        return navigator.locks?.request ? await navigator.locks.request(`${sessionKey}-refresh`, run) : await run();
+      } catch (e) {
+        const stored = storedSession();
+        if (stored?.userId === sess.userId && stored.refreshToken !== sess.refreshToken) return adopt(stored, false);
+        if (e?.status === 401 && sessionRef.current?.refreshToken === sess.refreshToken) handleLogout();
+        return null;
+      } finally {
+        refreshPromiseRef.current = null;
+      }
+    })();
+    refreshPromiseRef.current = pending;
+    return pending;
   };
+
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key !== sessionKey) return;
+      if (!event.newValue) { handleLogout(false, false); return; }
+      try {
+        const next = JSON.parse(event.newValue);
+        if (next?.refreshToken && next.userId === sessionRef.current?.userId) {
+          sessionRef.current = next;
+          setSession(next);
+        }
+      } catch { /* Ignore malformed storage from another tab. */ }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [session]);
 
   // Refresh once immediately whenever a session becomes active (covers the
   // "left the tab closed for a while, token already expired" case), then
@@ -3003,6 +3091,10 @@ export default function DispatchCRM() {
       })
       .catch((error) => {
         if (cancelled) return;
+        if (error?.status === 401 && sessionRef.current) {
+          refreshSession(sessionRef.current);
+          return;
+        }
         setAccessError(error.message || 'Could not verify account access.');
         handleLogout();
       });
@@ -3425,70 +3517,123 @@ export default function DispatchCRM() {
         }
         .period-select:hover { border-color: var(--green); }
         .period-select:focus { outline: none; border-color: var(--green); }
-        .driver-filter-row { display: flex; justify-content: flex-end; margin-bottom: 16px; }
-        .dashboard-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+        /* Dashboard */
+        .dash { display: flex; flex-direction: column; gap: 18px; }
+        .dash-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+        .dash-title h1 { font-size: 24px; letter-spacing: -0.01em; }
+        .dash-range { color: var(--muted); font-size: 13.5px; margin-top: 4px; }
         .dashboard-pdf-btn { display: flex; align-items: center; gap: 6px; }
+        .dash-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+        .dash-filters .period-selector { flex-direction: row-reverse; }
+        .dash-filters .range-label { display: none; }
+        .driver-filter-row { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 
-        /* Stat list (no cards, no dividers between rows — plain minimal rows) */
-        .stat-list {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          margin-bottom: 22px;
+        /* Ledger: gross split into full and partial loads */
+        .ledger { padding: 22px 24px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+        .ledger-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+        .ledger-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+        .ledger-gross {
+          font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 44px; line-height: 1;
+          letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--text);
         }
-        .stat-row-item {
-          display: flex;
-          align-items: baseline;
-          gap: 8px;
-        }
-        .stat-label { font-size: 14.5px; color: var(--text); }
-        .stat-value { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; }
-        .stat-divider {
-          height: 1px;
-          background: var(--border);
-          margin: 4px 0 6px 0;
-        }
+        .ledger-earn { text-align: right; }
+        .ledger-earn-value { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 26px; line-height: 1; color: var(--success); font-variant-numeric: tabular-nums; }
+        .ledger-bar { display: flex; height: 12px; margin: 22px 0 16px; border-radius: 3px; overflow: hidden; background: var(--elevated); gap: 2px; }
+        .ledger-bar span { display: block; height: 100%; }
+        .ledger-bar-full { background: var(--green); }
+        .ledger-bar-partial { background: var(--yellow); }
+        .ledger-bar-empty { flex: 1; }
+        .ledger-split { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        .ledger-part + .ledger-part { border-left: 1px solid var(--border); padding-left: 24px; }
+        .ledger-part-name { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 500; }
+        .ledger-part-name span { color: var(--muted); font-weight: 400; margin-left: auto; font-variant-numeric: tabular-nums; }
+        .ledger-part-value { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 20px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+        .ledger-part-fee { font-size: 13px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+        .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+        .swatch--full { background: var(--green); }
+        .swatch--partial { background: var(--yellow); }
 
-        /* Panel */
-        .panel {
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 16px 18px 18px 18px;
-        }
-        .panel-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: baseline;
-          margin-bottom: 10px;
-        }
-        .panel-header h3 { font-size: 14.5px; }
+        /* Panels */
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+        .panel-header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+        .panel-header h3 { font-size: 15px; }
         .panel-subtitle { font-size: 12.5px; color: var(--muted); }
+        .dash-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; }
 
-        .chart-wrap { margin-top: 4px; }
-        .panel + .panel { margin-top: 18px; }
-        .trucks-table { display: flex; flex-direction: column; overflow-x: auto; }
+        /* Driver ranking */
+        .rank { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+        .rank-row { display: grid; grid-template-columns: minmax(90px, 150px) 1fr auto; align-items: center; gap: 12px; font-size: 13.5px; }
+        .rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rank-track { height: 8px; background: var(--elevated); border-radius: 2px; overflow: hidden; }
+        .rank-fill { display: block; height: 100%; background: var(--green); border-radius: 2px; }
+        .rank-value { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+
+        /* Fleet status */
+        .fleet-total { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 32px; line-height: 1; display: flex; align-items: baseline; gap: 8px; }
+        .fleet-total span { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 13.5px; color: var(--muted); }
+        .fleet-bar { display: flex; flex-wrap: wrap; gap: 4px; margin: 16px 0; }
+        .fleet-cell { width: 18px; height: 18px; border-radius: 3px; background: var(--elevated); border: 1px solid var(--border); }
+        .fleet-cell--pickedup { background: var(--yellow); border-color: var(--yellow); }
+        .fleet-cell--available { background: var(--green); border-color: var(--green); }
+        .fleet-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; }
+        .fleet-legend li { display: flex; align-items: center; gap: 8px; }
+        .fleet-legend b { margin-left: auto; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; background: var(--elevated); border: 1px solid var(--border); }
+        .dot--pickedup { background: var(--yellow); border-color: var(--yellow); }
+        .dot--available { background: var(--green); border-color: var(--green); }
+
+        /* Trucks table */
+        .trucks-table { display: flex; flex-direction: column; overflow-x: auto; margin: 0 -20px -18px; }
         .trucks-row {
           display: grid;
-          grid-template-columns: 90px minmax(140px, 1.2fr) 130px minmax(170px, 1.3fr) 60px 110px;
-          gap: 10px; align-items: center; min-width: 760px;
-          padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 13.5px;
+          grid-template-columns: 96px minmax(140px, 1.2fr) 130px minmax(170px, 1.3fr) 60px 110px;
+          gap: 12px; align-items: center; min-width: 760px;
+          padding: 11px 20px; border-top: 1px solid var(--border); font-size: 13.5px;
         }
-        .trucks-row--admin { grid-template-columns: 90px minmax(140px, 1.2fr) 130px minmax(120px, 1fr) minmax(170px, 1.3fr) 60px 110px; min-width: 900px; }
-        .trucks-row:last-child { border-bottom: none; }
-        .trucks-row--head { color: var(--muted); font-size: 12.5px; }
-        .trucks-truck { font-weight: 600; }
+        .trucks-row--admin { grid-template-columns: 96px minmax(140px, 1.2fr) 130px minmax(120px, 1fr) minmax(170px, 1.3fr) 60px 110px; min-width: 900px; }
+        .trucks-row:not(.trucks-row--head):hover { background: var(--green-soft); }
+        .trucks-row--head { color: var(--muted); font-size: 12.5px; padding-top: 9px; padding-bottom: 9px; background: var(--elevated); }
+        .trucks-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .trucks-truck {
+          display: inline-block; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 13px;
+          padding: 2px 8px; border: 1.5px solid var(--text); border-radius: 4px; letter-spacing: 0.02em;
+        }
+        .trucks-gross { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
         .trucks-muted { color: var(--muted); }
-        .truck-status { font-size: 12.5px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); white-space: nowrap; }
-        .truck-status--pickedup { color: var(--yellow); border-color: var(--yellow); background: var(--yellow-soft); }
-        .truck-status--available { color: var(--text); }
+        .truck-status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; }
+        .truck-status em { font-style: normal; color: var(--muted); }
+        .truck-status--pickedup em { color: var(--yellow); }
         .empty-chart {
-          height: 160px;
+          min-height: 140px;
           display: flex;
           align-items: center;
           justify-content: center;
+          text-align: center;
           color: var(--muted);
           font-size: 13.5px;
+          padding: 0 16px;
+        }
+
+        @media (max-width: 900px) {
+          .dash-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 600px) {
+          .dash-head { align-items: flex-start; }
+          .dash-filters { display: grid; grid-template-columns: 1fr 1fr; }
+          .dash-filters > * { min-width: 0; width: 100%; }
+          .dash-filters .period-selector { grid-column: 1 / -1; flex-direction: column; align-items: stretch; }
+          .dash-filters .period-select { width: 100%; }
+          .dash-filters .custom-range input { flex: 1; min-width: 0; }
+          .ledger { padding: 18px 16px; }
+          .ledger-top { flex-direction: column; align-items: flex-start; gap: 14px; }
+          .rank-row { grid-template-columns: 1fr auto; row-gap: 6px; }
+          .rank-track { grid-column: 1 / -1; grid-row: 2; }
+          .ledger-gross { font-size: 34px; }
+          .ledger-earn { text-align: left; }
+          .ledger-split { grid-template-columns: 1fr; gap: 14px; }
+          .ledger-part + .ledger-part { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 14px; }
+          .trucks-table { margin: 0 -16px -18px; }
+          .panel { padding: 16px; }
         }
 
         /* Placeholder */
@@ -4157,6 +4302,41 @@ export default function DispatchCRM() {
           padding: 4px 0 0 0;
         }
         .auth-switch:hover { color: var(--green); }
+
+        /* Mobile navigation (hidden on wide screens) */
+        .menu-btn, .sidebar-close, .topbar-brand, .sidebar-backdrop { display: none; }
+        @media (max-width: 768px) {
+          .app-root { height: 100dvh; min-height: 100dvh; }
+          .sidebar {
+            position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: min(280px, 84vw);
+            transform: translateX(-100%); transition: transform 0.22s ease; box-shadow: none;
+          }
+          .sidebar--open { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,0.35); }
+          .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 55; background: var(--overlay); opacity: 0; pointer-events: none; transition: opacity 0.22s ease; }
+          .sidebar-backdrop--open { opacity: 1; pointer-events: auto; }
+          .sidebar-close { display: flex; margin-left: auto; background: transparent; border: none; color: var(--muted); padding: 6px; border-radius: 6px; cursor: pointer; }
+          .sidebar-close:hover { color: var(--text); background: var(--elevated); }
+          .brand { padding-bottom: 16px; }
+          .nav-item { padding: 11px 10px; font-size: 15px; }
+          .topbar { justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+          .menu-btn { display: flex; background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px; cursor: pointer; }
+          .topbar-brand { display: flex; align-items: center; gap: 7px; margin-right: auto; color: var(--green); font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; letter-spacing: 0.06em; }
+          .page { padding: 18px 16px 28px; }
+          .page-header { flex-wrap: wrap; }
+          .page-header > * { min-width: 0; }
+          .loads-header-actions { flex-wrap: wrap; }
+          .loads-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+          .loads-toolbar > * { min-width: 0; width: 100%; }
+          .loads-toolbar .search-box { grid-column: 1 / -1; max-width: none; order: -1; }
+          .bulk-bar { flex-wrap: wrap; }
+          .week-nav { flex-wrap: wrap; flex-shrink: 1; width: 100%; }
+          .week-nav > .period-select { flex: 1 1 100%; }
+          .week-nav-label { flex: 1; min-width: 0; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .sidebar, .sidebar-backdrop { transition: none; }
+        }
+
       `}</style>
 
       {!sessionChecked ? (
@@ -4167,9 +4347,13 @@ export default function DispatchCRM() {
         <div className="logout-screen"><span className="pagination-label">Checking account access…</span></div>
       ) : (
         <>
-          <Sidebar active={active} onSelect={setActive} dispatcherName={profile.full_name || profile.email} avatarUrl={profile.avatar_url || (profile.role === 'admin' ? settings.avatarUrl : '')} role={profile.role} onLogout={handleLogout} />
+          <Sidebar open={navOpen} onClose={() => setNavOpen(false)} active={active} onSelect={setActive} dispatcherName={profile.full_name || profile.email} avatarUrl={profile.avatar_url || (profile.role === 'admin' ? settings.avatarUrl : '')} role={profile.role} onLogout={handleLogout} />
           <div className="main-area">
             <div className="topbar">
+              <button className="menu-btn" onClick={() => setNavOpen(true)} aria-label="Open menu" aria-controls="app-sidebar" aria-expanded={navOpen}>
+                <Menu size={20} />
+              </button>
+              <div className="topbar-brand"><Truck size={18} strokeWidth={2.2} /><span>SDS UZ INC</span></div>
               <NotificationBell log={activityLog} />
             </div>
             {loadError && <div className="field-error" role="alert" style={{ margin: '0 0 12px' }}>
