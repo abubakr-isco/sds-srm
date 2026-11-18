@@ -36,6 +36,31 @@ To change the schema later: edit `prisma/schema.prisma`, then `npm run db:migrat
 
 ## Production
 
+### With Docker (one server)
+
+`docker-compose.prod.yml` in the repo root runs PostgreSQL, applies migrations, starts the API, and serves the
+frontend with nginx, which proxies `/api` to the API (one origin, so no CORS setup is needed).
+
+```bash
+cp .env.production.example .env.production      # set POSTGRES_PASSWORD and JWT_SECRET
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+
+# First administrator (once):
+docker compose -f docker-compose.prod.yml --env-file .env.production run --rm \
+  -e ADMIN_EMAIL=you@company.com -e ADMIN_FULL_NAME="Your Name" -e ADMIN_PASSWORD='<12+ chars>' \
+  migrate npm run create-admin
+```
+
+The site listens on `WEB_PORT` (default 8080). Put HTTPS in front of it (Caddy, nginx with Let's Encrypt,
+Cloudflare, or your host's load balancer). To release a new version: `git pull`, then the same `up -d --build`;
+migrations run before the API starts. Back up the database with
+`docker compose -f docker-compose.prod.yml exec db pg_dump -U sds sds_crm > backup.sql`.
+
+Note: `sds-uz-crm/vercel.json` builds the browser-only demo (`VITE_DEMO=1`, data in localStorage). It is not
+the production app.
+
+### Without Docker
+
 ```bash
 NODE_ENV=production npm ci && npm run build
 npm run db:migrate

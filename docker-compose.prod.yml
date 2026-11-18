@@ -1,0 +1,58 @@
+# Production stack on one server: PostgreSQL + API + nginx (frontend and /api on one origin).
+#   cp .env.production.example .env.production   # fill in secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+# Put HTTPS in front of the `web` port (Caddy, nginx, Cloudflare, or a load balancer).
+name: sds-crm
+
+services:
+  db:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sds}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:-sds_crm}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Applies database migrations, then exits. Also used for `npm run create-admin`.
+  migrate:
+    build: { context: ./backend, target: migrate }
+    environment: &api-env
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sds}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sds_crm}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env.production}
+      COMPANY_TIMEZONE: ${COMPANY_TIMEZONE:-America/Chicago}
+      TRUST_PROXY: "true"
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      LOGIN_MAX_FAILED_ATTEMPTS: ${LOGIN_MAX_FAILED_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-20}
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ./backend, target: runtime }
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build: { context: ./sds-uz-crm }
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:
