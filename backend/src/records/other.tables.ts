@@ -87,6 +87,15 @@ export class DriversTable implements TableHandler {
           where: { id: row.id },
           data: { firstName: dto.first_name, lastName: dto.last_name, truckNumber: dto.truck_number, type: dto.type, dispatcherId: nextDispatcher },
         });
+        if (nextDispatcher && nextDispatcher !== row.dispatcherId) {
+          // Loads belonging to other dispatchers cannot keep this truck after the move.
+          const affected = await tx.load.findMany({ where: { driverId: row.id } });
+          for (const load of affected) {
+            if (!load.assignedTo || load.assignedTo === nextDispatcher) continue;
+            const updated = await tx.load.update({ where: { id: load.id }, data: { driverId: null } });
+            await this.loads.audit(tx, actor, serializeLoad(load), serializeLoad(updated), 'UPDATE');
+          }
+        }
         out.push(serializeDriver(d));
       }
       return out;

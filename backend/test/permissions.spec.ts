@@ -57,6 +57,22 @@ describe('Access control', () => {
     expect(res.body.message).toMatch(/own drivers/);
   });
 
+  it("a dispatcher cannot claim a pool load that already has another dispatcher's truck", async () => {
+    const [truck] = (await api(app, d2).post('/records/drivers', { first_name: 'A', last_name: 'B', truck_number: '9', type: 'owner', dispatcher_id: d2Id })).body;
+    const [load] = (await api(app, admin).post('/records/loads', { load_number: 'POOL-TRUCK', total: 1, driver_id: truck.id })).body;
+    expect((await api(app, d1).patch(`/records/loads?id=eq.${load.id}`, { assigned_to: d1Id })).status).toBe(403);
+    expect((await prisma.load.findUniqueOrThrow({ where: { id: load.id } })).assignedTo).toBeNull();
+  });
+
+  it('moving a truck clears it from loads owned by the previous dispatcher and records history', async () => {
+    const [truck] = (await api(app, d1).post('/records/drivers', { first_name: 'A', last_name: 'B', truck_number: '10', type: 'company', dispatcher_id: d1Id })).body;
+    const [load] = (await api(app, d1).post('/records/loads', { load_number: 'MOVE-TRUCK', total: 1, assigned_to: d1Id, driver_id: truck.id })).body;
+    expect((await api(app, admin).patch(`/records/drivers?id=eq.${truck.id}`, { dispatcher_id: d2Id })).status).toBe(200);
+    expect((await prisma.load.findUniqueOrThrow({ where: { id: load.id } })).driverId).toBeNull();
+    const history = await prisma.loadHistory.findMany({ where: { loadId: load.id }, orderBy: { id: 'asc' } });
+    expect(history.map((h) => h.action)).toEqual(['INSERT', 'UPDATE']);
+  });
+
   it('only admins change company settings and manage staff', async () => {
     expect((await api(app, d1).patch('/records/settings?id=eq.1', { full_pct: 99 })).status).toBe(403);
     expect((await api(app, admin).patch('/records/settings?id=eq.1', { full_pct: 2.5 })).body[0].full_pct).toBe(2.5);

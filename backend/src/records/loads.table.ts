@@ -202,11 +202,12 @@ export class LoadsTable implements TableHandler {
   /** A load's truck must belong to the load's dispatcher. */
   private async checkDriver(tx: Db, actor: Actor, before: LoadRow | null, next: LoadRow) {
     if (!next.driver_id) return;
+    // An unchanged truck is safe only while the load stays with the same dispatcher.
+    // Claiming a pool load must check the truck's owner again.
     if (before && before.driver_id === next.driver_id && before.assigned_to === next.assigned_to) return;
     const driver = await tx.driver.findUnique({ where: { id: next.driver_id } });
     if (!driver) throw unprocessable('Driver not found.');
     if (actor.role !== Role.admin) {
-      if (before && before.driver_id === next.driver_id) return;
       if (driver.dispatcherId !== actor.id) throw forbidden('You can only use your own drivers.');
       return;
     }
