@@ -1,7 +1,7 @@
-import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ExecutionContext, Module } from '@nestjs/common';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccountController } from './account/account.controller';
 import { AuthController } from './auth/auth.controller';
 import { AuthGuard } from './auth/auth.guard';
@@ -21,9 +21,18 @@ import { StaffController, StaffService } from './staff/staff.controller';
 @Module({
   imports: [
     JwtModule.register({}),
-    // Per-IP limit for the routes guarded by ThrottlerGuard (sign-in and token refresh).
+    // Per-IP limits on every route: a general one, and a strict one for sign-in / token refresh.
     ThrottlerModule.forRootAsync({
-      useFactory: () => ({ throttlers: [{ name: 'auth', ttl: 60_000, limit: loadConfig().authRateLimitPerMinute }] }),
+      useFactory: () => {
+        const config = loadConfig();
+        const isAuthRoute = (ctx: ExecutionContext) => /^\/api\/auth\/(login|refresh)\b/.test(ctx.switchToHttp().getRequest().path);
+        return {
+          throttlers: [
+            { name: 'api', ttl: 60_000, limit: config.apiRateLimitPerMinute },
+            { name: 'auth', ttl: 60_000, limit: config.authRateLimitPerMinute, skipIf: (ctx) => !isAuthRoute(ctx) },
+          ],
+        };
+      },
     }),
   ],
   controllers: [HealthController, AuthController, AccountController, StaffController, RecordsController, TestDataController],
@@ -31,6 +40,8 @@ import { StaffController, StaffService } from './staff/staff.controller';
     { provide: APP_CONFIG, useFactory: loadConfig },
     PrismaService, AuthService, StaffService,
     LoadsTable, DriversTable, SettingsTable, StaffProfilesTable, CalendarNotesTable, CustomCitiesTable, ActivityLogTable, LoadHistoryTable, AdminNoticesTable,
+    // Rate limits run before authentication, so floods of bad tokens are limited too.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],

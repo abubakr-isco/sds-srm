@@ -685,7 +685,7 @@ function Drivers({ drivers, setDrivers, logActivity, accessToken, role, userId, 
   const exportExcel = () => {
     const header = ['Truck #', 'First Name', 'Last Name', 'Type', 'Dispatcher'];
     const rows = visibleDrivers.map((d) => [d.truckNumber || '', d.firstName, d.lastName, typeLabel(d.type), staffName(employees, d.dispatcherId)]);
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const ws = safeSheet([header, ...rows]);
     ws['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Drivers');
@@ -777,6 +777,13 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
+
+// Excel runs text that starts with = + - @ (or a tab / CR) as a formula. Names, cities and
+// load numbers are typed by users, so prefix such text with ' to keep it plain text.
+function safeSheet(rows) {
+  const clean = (v) => (typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
+  return XLSX.utils.aoa_to_sheet(rows.map((row) => row.map(clean)));
+}
 
 // ---------------------------------------------------------------------------
 // COMBOBOX — shared search-or-pick control (drivers, parent loads, cities)
@@ -1457,7 +1464,7 @@ function Loads({ loads, setLoads, drivers, customCities, setCustomCities, employ
         fmtDateInput(l.pickupDate), fmtDateInput(l.deliveryDate), l.total,
       ];
     });
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const ws = safeSheet([header, ...rows]);
     ws['!cols'] = header.map(() => ({ wch: 14 }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Loads');
@@ -1798,7 +1805,7 @@ function Salary({ loads, drivers: allDrivers, role, employees }) {
       const rowTotal = dayValues.reduce((s, v) => s + v, 0);
       return [driver.truckNumber || '—', `${driver.firstName} ${driver.lastName}`, ...(role === 'admin' ? [staffName(employees, driver.dispatcherId)] : []), rowTotal, ...dayValues];
     });
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const ws = safeSheet([header, ...rows]);
     ws['!cols'] = [{ wch: 10 }, { wch: 22 }, ...(role === 'admin' ? [{ wch: 20 }] : []), { wch: 14 }, ...days.map(() => ({ wch: 12 }))];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Salary');
@@ -2521,19 +2528,41 @@ export default function DispatchCRM() {
     theme: 'dark',
   });
 
+  // The browser keeps only who is signed in ({ email, userId }). The access token stays in
+  // memory and the refresh token in an HttpOnly cookie that page scripts cannot read, so an
+  // XSS bug could not steal a long-lived login. (The local preview has no server and keeps
+  // its fake tokens in storage.)
+  const persistSession = (sess) => {
+    const stored = PREVIEW ? sess : { email: sess.email, userId: sess.userId };
+    try { localStorage.setItem(sessionKey, JSON.stringify(stored)); } catch (e) { /* ignore */ }
+  };
+
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(sessionKey);
-      if (saved) setSession(JSON.parse(saved));
-    } catch (e) { /* no saved session yet */ }
-    setSessionChecked(true);
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(sessionKey)); } catch (e) { /* no saved session yet */ }
+    if (!saved?.userId) { setSessionChecked(true); return; }
+    if (PREVIEW) { setSession(saved); setSessionChecked(true); return; }
+    // Restore the session from the refresh cookie.
+    authRefresh()
+      .then((data) => {
+        const sess = { accessToken: data.access_token, email: data.user?.email || saved.email, userId: data.user?.id };
+        sessionRef.current = sess;
+        setSession(sess);
+        persistSession(sess);
+      })
+      .catch((e) => {
+        if (e?.status === 401 || e?.status === 403) try { localStorage.removeItem(sessionKey); } catch { /* ignore */ }
+      })
+      .finally(() => setSessionChecked(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleAuthenticated = (sess) => {
     setAccessError('');
     setProfileChecked(false);
+    sessionRef.current = sess;
     setSession(sess);
-    try { localStorage.setItem(sessionKey, JSON.stringify(sess)); } catch (e) { /* ignore */ }
+    persistSession(sess);
   };
 
   const handleLogout = (revoke = true, clearStorage = true) => {
@@ -2552,42 +2581,37 @@ export default function DispatchCRM() {
     if (clearStorage) try { localStorage.removeItem(sessionKey); } catch (e) { /* ignore */ }
   };
 
-  // Keep a ref to the latest session so the refresh interval below always
-  // refreshes with the current refresh_token, without re-triggering itself
-  // every time session changes (the server may rotate refresh tokens).
+  // Keep a ref to the latest session so the refresh interval below always uses the
+  // current one without re-triggering itself every time the session changes.
   const sessionRef = useRef(session);
   const refreshPromiseRef = useRef(null);
   useEffect(() => { sessionRef.current = session; }, [session]);
 
   const refreshSession = (sess) => {
-    if (!sess?.refreshToken) return Promise.resolve(null);
+    if (!sess?.userId) return Promise.resolve(null);
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
-    const adopt = (next, persist) => {
-      if (sessionRef.current?.userId !== next.userId) return null;
+    const run = async () => {
+      if (sessionRef.current?.userId !== sess.userId) return null;
+      const data = await authRefresh(PREVIEW ? sess.refreshToken : undefined);
+      // The cookie is shared by all tabs: if another tab signed in as someone else,
+      // this tab must not silently switch users.
+      if (data.user?.id && data.user.id !== sess.userId) {
+        const error = new Error('Signed in as another user in another tab.');
+        error.status = 401;
+        throw error;
+      }
+      if (sessionRef.current?.userId !== sess.userId) return null;
+      const next = { ...sessionRef.current, accessToken: data.access_token, ...(PREVIEW ? { refreshToken: data.refresh_token } : {}) };
       sessionRef.current = next;
       setSession(next);
-      if (persist) try { localStorage.setItem(sessionKey, JSON.stringify(next)); } catch (e) { /* ignore */ }
+      persistSession(next);
       return next;
-    };
-    const storedSession = () => {
-      try { return JSON.parse(localStorage.getItem(sessionKey)); } catch { return null; }
-    };
-    const run = async () => {
-      // Another tab may have rotated the shared token while this tab waited.
-      const stored = storedSession();
-      if (stored?.userId === sess.userId && stored.refreshToken !== sess.refreshToken) return adopt(stored, false);
-      if (sessionRef.current?.userId !== sess.userId) return null;
-      const data = await authRefresh(sess.refreshToken);
-      return adopt({ accessToken: data.access_token, refreshToken: data.refresh_token, email: sess.email, userId: sess.userId }, true);
     };
     const pending = (async () => {
       try {
-        // Serialise rotations across tabs; the ref also coalesces calls within this tab.
-        return navigator.locks?.request ? await navigator.locks.request(`${sessionKey}-refresh`, run) : await run();
+        return await run(); // authRefresh() itself serialises refreshes across tabs
       } catch (e) {
-        const stored = storedSession();
-        if (stored?.userId === sess.userId && stored.refreshToken !== sess.refreshToken) return adopt(stored, false);
-        if (e?.status === 401 && sessionRef.current?.refreshToken === sess.refreshToken) handleLogout();
+        if ((e?.status === 401 || e?.status === 403) && sessionRef.current?.userId === sess.userId) handleLogout(false, false);
         return null;
       } finally {
         refreshPromiseRef.current = null;
@@ -2599,14 +2623,11 @@ export default function DispatchCRM() {
 
   useEffect(() => {
     const onStorage = (event) => {
-      if (event.key !== sessionKey) return;
+      if (event.key !== sessionKey || !sessionRef.current) return;
       if (!event.newValue) { handleLogout(false, false); return; }
       try {
         const next = JSON.parse(event.newValue);
-        if (next?.refreshToken && next.userId === sessionRef.current?.userId) {
-          sessionRef.current = next;
-          setSession(next);
-        }
+        if (next?.userId !== sessionRef.current.userId) handleLogout(false, false);
       } catch { /* Ignore malformed storage from another tab. */ }
     };
     window.addEventListener('storage', onStorage);
@@ -2773,7 +2794,7 @@ export default function DispatchCRM() {
     if (next.email && next.email !== session.email) {
       const nextSession = { ...session, email: next.email };
       setSession(nextSession);
-      try { localStorage.setItem(sessionKey, JSON.stringify(nextSession)); } catch (e) { /* ignore */ }
+      persistSession(nextSession);
     }
   };
 

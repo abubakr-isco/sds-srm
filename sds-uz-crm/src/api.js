@@ -392,12 +392,14 @@ async function previewRequest(path, { method = 'GET', body, accessToken } = {}) 
 
 export async function apiRequest(path, options = {}) {
   if (PREVIEW) return previewRequest(path, options);
-  const headers = { 'Content-Type': 'application/json' };
+  // X-SDS-CSRF: the server's CSRF check for the cookie-based /auth routes.
+  const headers = { 'Content-Type': 'application/json', 'X-SDS-CSRF': '1' };
   if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
   let response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method: options.method || 'GET', headers,
+      credentials: 'include', // the HttpOnly refresh cookie (sent only to /api/auth)
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch {
@@ -427,4 +429,19 @@ export const apiTable = (table, accessToken) => ({
 export const authSignIn = (email, password) => apiRequest('/auth/login', { method: 'POST', body: { email, password } });
 export const updateAccount = (accessToken, changes) => apiRequest('/account/update', { method: 'POST', body: changes, accessToken });
 export const authLogout = (accessToken) => (PREVIEW ? Promise.resolve(null) : apiRequest('/auth/logout', { method: 'POST', body: {}, accessToken }));
-export const authRefresh = (refreshToken) => apiRequest('/auth/refresh', { method: 'POST', body: { refresh_token: refreshToken } });
+// The real server reads the refresh token from its HttpOnly cookie and rotates it on every
+// use, so refreshes must never overlap: calls in this tab share one request, and tabs take
+// turns through a Web Lock (each then sends the newest cookie). Only the local preview passes
+// its fake token in the body.
+let refreshing = null;
+export function authRefresh(previewToken) {
+  if (PREVIEW) return apiRequest('/auth/refresh', { method: 'POST', body: { refresh_token: previewToken } });
+  if (!refreshing) {
+    const call = () => apiRequest('/auth/refresh', { method: 'POST', body: {} });
+    const locked = typeof navigator !== 'undefined' && navigator.locks?.request
+      ? navigator.locks.request('sds-auth-refresh', call)
+      : call();
+    refreshing = locked.finally(() => { refreshing = null; });
+  }
+  return refreshing;
+}

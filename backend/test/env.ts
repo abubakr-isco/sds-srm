@@ -7,6 +7,7 @@ process.env.COMPANY_TIMEZONE = 'America/Chicago';
 process.env.LOGIN_MAX_FAILED_ATTEMPTS = '3';
 process.env.LOGIN_LOCK_MINUTES = '15';
 process.env.AUTH_RATE_LIMIT_PER_MINUTE = process.env.AUTH_RATE_LIMIT_PER_MINUTE || '1000';
+process.env.API_RATE_LIMIT_PER_MINUTE = process.env.API_RATE_LIMIT_PER_MINUTE || '100000';
 process.env.ENABLE_TEST_DATA = 'true';
 process.env.TEST_DATA_PASSWORD = 'TestData2026!';
 process.env.CORS_ORIGINS = '';

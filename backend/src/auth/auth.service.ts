@@ -80,6 +80,7 @@ export class AuthService {
       refresh_token: next,
       token_type: 'Bearer',
       expires_in: this.config.accessTokenTtlSeconds,
+      user: { id: session.user.id, email: session.user.email },
     };
   }
 

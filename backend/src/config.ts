@@ -11,6 +11,7 @@ export interface AppConfig {
   loginMaxFailedAttempts: number;
   loginLockMinutes: number;
   authRateLimitPerMinute: number;
+  apiRateLimitPerMinute: number;
   enableTestData: boolean;
   testDataPassword: string;
 }
@@ -49,6 +50,7 @@ export function loadConfig(): AppConfig {
     loginMaxFailedAttempts: int('LOGIN_MAX_FAILED_ATTEMPTS', 5),
     loginLockMinutes: int('LOGIN_LOCK_MINUTES', 15),
     authRateLimitPerMinute: int('AUTH_RATE_LIMIT_PER_MINUTE', 20),
+    apiRateLimitPerMinute: int('API_RATE_LIMIT_PER_MINUTE', 600),
     enableTestData,
     testDataPassword,
   };

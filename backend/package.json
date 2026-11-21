@@ -67,5 +67,8 @@
     "tsx": "4.20.3",
     "typescript": "5.8.3",
     "typescript-eslint": "8.34.1"
+  },
+  "overrides": {
+    "effect": "3.22.5"
   }
 }

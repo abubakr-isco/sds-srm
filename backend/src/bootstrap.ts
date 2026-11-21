@@ -18,8 +18,9 @@ export async function createApp(options: NestApplicationOptions = {}): Promise<{
   app.enableCors({
     origin: config.corsOrigins.length ? config.corsOrigins : false,
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-SDS-CSRF'],
     exposedHeaders: ['X-Total-Count'],
+    credentials: config.corsOrigins.length > 0, // the refresh cookie, for listed dev origins only
   });
   app.enableShutdownHooks();
   return { app, config };

@@ -27,17 +27,33 @@ export async function makeUser(email: string, role: Role, password = 'Password12
   });
 }
 
+/** `refresh` is the raw refresh token, taken from the HttpOnly cookie the server set. */
 export interface Session { token: string; refresh: string; userId: string; }
 
+export function refreshCookie(res: request.Response): string {
+  const raw = ([] as string[]).concat(res.headers['set-cookie'] || []).find((c) => c.startsWith('sds_refresh='));
+  return raw ? decodeURIComponent(raw.split(';')[0].slice('sds_refresh='.length)) : '';
+}
+
 export async function login(app: INestApplication, email: string, password = 'Password123!'): Promise<Session> {
-  const res = await request(app.getHttpServer()).post('/api/auth/login').send({ email, password });
+  const res = await request(app.getHttpServer()).post('/api/auth/login').set('X-SDS-CSRF', '1').send({ email, password });
   if (res.status !== 200) throw new Error(`login ${email} failed: ${res.status} ${JSON.stringify(res.body)}`);
-  return { token: res.body.access_token, refresh: res.body.refresh_token, userId: res.body.user.id };
+  return { token: res.body.access_token, refresh: refreshCookie(res), userId: res.body.user.id };
+}
+
+/** POST /api/auth/refresh the way the browser does it: refresh cookie + CSRF header. */
+export function refreshWith(app: INestApplication, refreshToken: string, headers: Record<string, string> = { 'X-SDS-CSRF': '1' }) {
+  const r = request(app.getHttpServer()).post('/api/auth/refresh').set('Cookie', `sds_refresh=${encodeURIComponent(refreshToken)}`);
+  for (const [k, v] of Object.entries(headers)) r.set(k, v);
+  return r.send({});
 }
 
 /** Small client mirroring src/api.js on the frontend. */
 export function api(app: INestApplication, s?: Session) {
-  const auth = (r: request.Test) => (s ? r.set('Authorization', `Bearer ${s.token}`) : r);
+  const auth = (r: request.Test) => {
+    r.set('X-SDS-CSRF', '1');
+    return s ? r.set('Authorization', `Bearer ${s.token}`) : r;
+  };
   const http = () => request(app.getHttpServer());
   return {
     get: (path: string) => auth(http().get(`/api${path}`)),
