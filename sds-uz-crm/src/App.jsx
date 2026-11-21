@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { apiRequest, apiTable, authSignIn, authRefresh, authLogout, updateAccount, TEST_PASSWORD, PREVIEW } from './api.js';
+import { US_STATE_ABBRS, cityOption, filterCityOptions, loadUsCityOptions, normalizeCityQuery } from './usCities.js';
 import {
   LayoutDashboard, Package, Users, Wallet, CalendarDays, Truck,
   Plus, Pencil, Trash2, X, Settings as SettingsIcon, Search, CornerDownRight,
@@ -776,481 +777,20 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
-// Curated list of major US freight-hub cities for the From/To fields.
-// Not the full USPS database — a representative set covering every state
-// so dispatchers can only pick real, existing cities (search by name or zip).
-const usCities = [
-  { city: 'New York', state: 'NY', zip: '10001' }, { city: 'Buffalo', state: 'NY', zip: '14202' },
-  { city: 'Rochester', state: 'NY', zip: '14604' }, { city: 'Syracuse', state: 'NY', zip: '13202' },
-  { city: 'Albany', state: 'NY', zip: '12207' }, { city: 'Yonkers', state: 'NY', zip: '10701' },
-  { city: 'Los Angeles', state: 'CA', zip: '90012' }, { city: 'San Francisco', state: 'CA', zip: '94102' },
-  { city: 'San Diego', state: 'CA', zip: '92101' }, { city: 'San Jose', state: 'CA', zip: '95113' },
-  { city: 'Sacramento', state: 'CA', zip: '95814' }, { city: 'Fresno', state: 'CA', zip: '93721' },
-  { city: 'Long Beach', state: 'CA', zip: '90802' }, { city: 'Oakland', state: 'CA', zip: '94612' },
-  { city: 'Bakersfield', state: 'CA', zip: '93301' }, { city: 'Anaheim', state: 'CA', zip: '92805' },
-  { city: 'Riverside', state: 'CA', zip: '92501' }, { city: 'Stockton', state: 'CA', zip: '95202' },
-  { city: 'Irvine', state: 'CA', zip: '92614' }, { city: 'Fremont', state: 'CA', zip: '94536' },
-  { city: 'Santa Ana', state: 'CA', zip: '92701' }, { city: 'Chula Vista', state: 'CA', zip: '91910' },
-  { city: 'Fontana', state: 'CA', zip: '92335' }, { city: 'Modesto', state: 'CA', zip: '95354' },
-  { city: 'Chicago', state: 'IL', zip: '60601' }, { city: 'Springfield', state: 'IL', zip: '62701' },
-  { city: 'Naperville', state: 'IL', zip: '60540' }, { city: 'Rockford', state: 'IL', zip: '61101' },
-  { city: 'Peoria', state: 'IL', zip: '61602' },
-  { city: 'Houston', state: 'TX', zip: '77002' }, { city: 'Dallas', state: 'TX', zip: '75201' },
-  { city: 'San Antonio', state: 'TX', zip: '78205' }, { city: 'Austin', state: 'TX', zip: '78701' },
-  { city: 'Fort Worth', state: 'TX', zip: '76102' }, { city: 'El Paso', state: 'TX', zip: '79901' },
-  { city: 'Arlington', state: 'TX', zip: '76010' }, { city: 'Corpus Christi', state: 'TX', zip: '78401' },
-  { city: 'Plano', state: 'TX', zip: '75023' }, { city: 'Laredo', state: 'TX', zip: '78040' },
-  { city: 'Lubbock', state: 'TX', zip: '79401' }, { city: 'Amarillo', state: 'TX', zip: '79101' },
-  { city: 'McAllen', state: 'TX', zip: '78501' }, { city: 'Waco', state: 'TX', zip: '76701' },
-  { city: 'Beaumont', state: 'TX', zip: '77701' },
-  { city: 'Phoenix', state: 'AZ', zip: '85003' }, { city: 'Tucson', state: 'AZ', zip: '85701' },
-  { city: 'Mesa', state: 'AZ', zip: '85201' }, { city: 'Chandler', state: 'AZ', zip: '85224' },
-  { city: 'Scottsdale', state: 'AZ', zip: '85251' },
-  { city: 'Philadelphia', state: 'PA', zip: '19102' }, { city: 'Pittsburgh', state: 'PA', zip: '15222' },
-  { city: 'Allentown', state: 'PA', zip: '18101' }, { city: 'Erie', state: 'PA', zip: '16501' },
-  { city: 'Harrisburg', state: 'PA', zip: '17101' },
-  { city: 'Jacksonville', state: 'FL', zip: '32202' }, { city: 'Miami', state: 'FL', zip: '33131' },
-  { city: 'Tampa', state: 'FL', zip: '33602' }, { city: 'Orlando', state: 'FL', zip: '32801' },
-  { city: 'Fort Lauderdale', state: 'FL', zip: '33301' }, { city: 'St. Petersburg', state: 'FL', zip: '33701' },
-  { city: 'Tallahassee', state: 'FL', zip: '32301' },
-  { city: 'Columbus', state: 'OH', zip: '43215' }, { city: 'Cleveland', state: 'OH', zip: '44113' },
-  { city: 'Cincinnati', state: 'OH', zip: '45202' }, { city: 'Toledo', state: 'OH', zip: '43604' },
-  { city: 'Akron', state: 'OH', zip: '44308' }, { city: 'Dayton', state: 'OH', zip: '45402' },
-  { city: 'Charlotte', state: 'NC', zip: '28202' }, { city: 'Raleigh', state: 'NC', zip: '27601' },
-  { city: 'Greensboro', state: 'NC', zip: '27401' }, { city: 'Durham', state: 'NC', zip: '27701' },
-  { city: 'Winston-Salem', state: 'NC', zip: '27101' },
-  { city: 'Indianapolis', state: 'IN', zip: '46204' }, { city: 'Fort Wayne', state: 'IN', zip: '46802' },
-  { city: 'Evansville', state: 'IN', zip: '47708' },
-  { city: 'Seattle', state: 'WA', zip: '98101' }, { city: 'Spokane', state: 'WA', zip: '99201' },
-  { city: 'Tacoma', state: 'WA', zip: '98402' }, { city: 'Vancouver', state: 'WA', zip: '98660' },
-  { city: 'Bellevue', state: 'WA', zip: '98004' },
-  { city: 'Denver', state: 'CO', zip: '80202' }, { city: 'Colorado Springs', state: 'CO', zip: '80903' },
-  { city: 'Aurora', state: 'CO', zip: '80010' }, { city: 'Fort Collins', state: 'CO', zip: '80521' },
-  { city: 'Boulder', state: 'CO', zip: '80301' },
-  { city: 'Washington', state: 'DC', zip: '20001' },
-  { city: 'Boston', state: 'MA', zip: '02108' }, { city: 'Worcester', state: 'MA', zip: '01608' },
-  { city: 'Springfield', state: 'MA', zip: '01103' }, { city: 'Cambridge', state: 'MA', zip: '02138' },
-  { city: 'El Paso', state: 'TX', zip: '79901' },
-  { city: 'Nashville', state: 'TN', zip: '37203' }, { city: 'Memphis', state: 'TN', zip: '38103' },
-  { city: 'Knoxville', state: 'TN', zip: '37902' }, { city: 'Chattanooga', state: 'TN', zip: '37402' },
-  { city: 'Detroit', state: 'MI', zip: '48226' }, { city: 'Grand Rapids', state: 'MI', zip: '49503' },
-  { city: 'Lansing', state: 'MI', zip: '48933' }, { city: 'Ann Arbor', state: 'MI', zip: '48104' },
-  { city: 'Oklahoma City', state: 'OK', zip: '73102' }, { city: 'Tulsa', state: 'OK', zip: '74103' },
-  { city: 'Norman', state: 'OK', zip: '73069' },
-  { city: 'Portland', state: 'OR', zip: '97201' }, { city: 'Eugene', state: 'OR', zip: '97401' },
-  { city: 'Salem', state: 'OR', zip: '97301' },
-  { city: 'Las Vegas', state: 'NV', zip: '89101' }, { city: 'Reno', state: 'NV', zip: '89501' },
-  { city: 'Henderson', state: 'NV', zip: '89002' },
-  { city: 'Louisville', state: 'KY', zip: '40202' }, { city: 'Lexington', state: 'KY', zip: '40507' },
-  { city: 'Baltimore', state: 'MD', zip: '21201' }, { city: 'Annapolis', state: 'MD', zip: '21401' },
-  { city: 'Milwaukee', state: 'WI', zip: '53202' }, { city: 'Madison', state: 'WI', zip: '53703' },
-  { city: 'Green Bay', state: 'WI', zip: '54301' },
-  { city: 'Albuquerque', state: 'NM', zip: '87102' }, { city: 'Santa Fe', state: 'NM', zip: '87501' },
-  { city: 'Kansas City', state: 'MO', zip: '64106' }, { city: 'St. Louis', state: 'MO', zip: '63101' },
-  { city: 'Springfield', state: 'MO', zip: '65806' }, { city: 'Columbia', state: 'MO', zip: '65201' },
-  { city: 'Atlanta', state: 'GA', zip: '30303' }, { city: 'Savannah', state: 'GA', zip: '31401' },
-  { city: 'Augusta', state: 'GA', zip: '30901' }, { city: 'Columbus', state: 'GA', zip: '31901' },
-  { city: 'Omaha', state: 'NE', zip: '68102' }, { city: 'Lincoln', state: 'NE', zip: '68508' },
-  { city: 'Raleigh', state: 'NC', zip: '27601' },
-  { city: 'Miami', state: 'FL', zip: '33131' },
-  { city: 'Minneapolis', state: 'MN', zip: '55401' }, { city: 'Saint Paul', state: 'MN', zip: '55102' },
-  { city: 'Rochester', state: 'MN', zip: '55901' },
-  { city: 'Tulsa', state: 'OK', zip: '74103' },
-  { city: 'Wichita', state: 'KS', zip: '67202' }, { city: 'Topeka', state: 'KS', zip: '66603' },
-  { city: 'Overland Park', state: 'KS', zip: '66210' },
-  { city: 'New Orleans', state: 'LA', zip: '70112' }, { city: 'Baton Rouge', state: 'LA', zip: '70801' },
-  { city: 'Shreveport', state: 'LA', zip: '71101' }, { city: 'Lafayette', state: 'LA', zip: '70501' },
-  { city: 'Honolulu', state: 'HI', zip: '96813' },
-  { city: 'Anchorage', state: 'AK', zip: '99501' },
-  { city: 'Salt Lake City', state: 'UT', zip: '84101' }, { city: 'Provo', state: 'UT', zip: '84601' },
-  { city: 'West Valley City', state: 'UT', zip: '84119' },
-  { city: 'Richmond', state: 'VA', zip: '23219' }, { city: 'Virginia Beach', state: 'VA', zip: '23451' },
-  { city: 'Norfolk', state: 'VA', zip: '23510' }, { city: 'Arlington', state: 'VA', zip: '22201' },
-  { city: 'Alexandria', state: 'VA', zip: '22314' }, { city: 'Newport News', state: 'VA', zip: '23601' },
-  { city: 'Birmingham', state: 'AL', zip: '35203' }, { city: 'Montgomery', state: 'AL', zip: '36104' },
-  { city: 'Huntsville', state: 'AL', zip: '35801' }, { city: 'Mobile', state: 'AL', zip: '36602' },
-  { city: 'Little Rock', state: 'AR', zip: '72201' }, { city: 'Fayetteville', state: 'AR', zip: '72701' },
-  { city: 'Hartford', state: 'CT', zip: '06103' }, { city: 'New Haven', state: 'CT', zip: '06510' },
-  { city: 'Bridgeport', state: 'CT', zip: '06604' }, { city: 'Stamford', state: 'CT', zip: '06901' },
-  { city: 'Wilmington', state: 'DE', zip: '19801' }, { city: 'Dover', state: 'DE', zip: '19901' },
-  { city: 'Boise', state: 'ID', zip: '83702' },
-  { city: 'Des Moines', state: 'IA', zip: '50309' }, { city: 'Cedar Rapids', state: 'IA', zip: '52401' },
-  { city: 'Portland', state: 'ME', zip: '04101' }, { city: 'Augusta', state: 'ME', zip: '04330' },
-  { city: 'Jackson', state: 'MS', zip: '39201' }, { city: 'Gulfport', state: 'MS', zip: '39501' },
-  { city: 'Billings', state: 'MT', zip: '59101' }, { city: 'Helena', state: 'MT', zip: '59601' },
-  { city: 'Manchester', state: 'NH', zip: '03101' }, { city: 'Concord', state: 'NH', zip: '03301' },
-  { city: 'Newark', state: 'NJ', zip: '07102' }, { city: 'Jersey City', state: 'NJ', zip: '07302' },
-  { city: 'Trenton', state: 'NJ', zip: '08608' }, { city: 'Atlantic City', state: 'NJ', zip: '08401' },
-  { city: 'Fargo', state: 'ND', zip: '58102' }, { city: 'Bismarck', state: 'ND', zip: '58501' },
-  { city: 'Providence', state: 'RI', zip: '02903' },
-  { city: 'Columbia', state: 'SC', zip: '29201' }, { city: 'Charleston', state: 'SC', zip: '29401' },
-  { city: 'Greenville', state: 'SC', zip: '29601' },
-  { city: 'Sioux Falls', state: 'SD', zip: '57104' }, { city: 'Rapid City', state: 'SD', zip: '57701' },
-  { city: 'Burlington', state: 'VT', zip: '05401' }, { city: 'Montpelier', state: 'VT', zip: '05602' },
-  { city: 'Charleston', state: 'WV', zip: '25301' }, { city: 'Huntington', state: 'WV', zip: '25701' },
-  { city: 'Cheyenne', state: 'WY', zip: '82001' }, { city: 'Casper', state: 'WY', zip: '82601' },
-];
-
-// Full state name -> USPS abbreviation, used to normalize the extended list below.
-const STATE_ABBR = {
-  Alabama: 'AL', Alaska: 'AK', Arizona: 'AZ', Arkansas: 'AR', California: 'CA',
-  Colorado: 'CO', Connecticut: 'CT', Delaware: 'DE', Florida: 'FL', Georgia: 'GA',
-  Hawaii: 'HI', Idaho: 'ID', Illinois: 'IL', Indiana: 'IN', Iowa: 'IA',
-  Kansas: 'KS', Kentucky: 'KY', Louisiana: 'LA', Maine: 'ME', Maryland: 'MD',
-  Massachusetts: 'MA', Michigan: 'MI', Minnesota: 'MN', Mississippi: 'MS',
-  Missouri: 'MO', Montana: 'MT', Nebraska: 'NE', Nevada: 'NV', 'New Hampshire': 'NH',
-  'New Jersey': 'NJ', 'New Mexico': 'NM', 'New York': 'NY', 'North Carolina': 'NC',
-  'North Dakota': 'ND', Ohio: 'OH', Oklahoma: 'OK', Oregon: 'OR', Pennsylvania: 'PA',
-  'Rhode Island': 'RI', 'South Carolina': 'SC', 'South Dakota': 'SD', Tennessee: 'TN',
-  Texas: 'TX', Utah: 'UT', Vermont: 'VT', Virginia: 'VA', Washington: 'WA',
-  'West Virginia': 'WV', Wisconsin: 'WI', Wyoming: 'WY', 'District of Columbia': 'DC',
-};
-
-// Extended city list (no ZIP on file) sourced from a public US-cities dataset —
-// broadens name search far beyond the ~150 hub cities above, covering every
-// state. ZIP search only works for the hub list above; see chat for why.
-const usCitiesExtra = [
-  { city: 'Abbeville', state: 'Louisiana' }, { city: 'Aberdeen', state: 'Maryland' },
-  { city: 'Aberdeen', state: 'Mississippi' }, { city: 'Aberdeen', state: 'South Dakota' },
-  { city: 'Aberdeen', state: 'Washington' }, { city: 'Abilene', state: 'Texas' },
-  { city: 'Abilene', state: 'Kansas' }, { city: 'Abingdon', state: 'Virginia' },
-  { city: 'Abington', state: 'Massachusetts' }, { city: 'Absecon', state: 'New Jersey' },
-  { city: 'Accokeek', state: 'Maryland' }, { city: 'Acton', state: 'Massachusetts' },
-  { city: 'Acushnet', state: 'Massachusetts' }, { city: 'Acworth', state: 'Georgia' },
-  { city: 'Ada', state: 'Oklahoma' }, { city: 'Adams', state: 'Massachusetts' },
-  { city: 'Addison', state: 'Illinois' }, { city: 'Addison', state: 'Texas' },
-  { city: 'Adelanto', state: 'California' }, { city: 'Adelphi', state: 'Maryland' },
-  { city: 'Adrian', state: 'Michigan' }, { city: 'Affton', state: 'Missouri' },
-  { city: 'Agawam', state: 'Massachusetts' }, { city: 'Agoura Hills', state: 'California' },
-  { city: 'Ahuimanu', state: 'Hawaii' }, { city: 'Aiea', state: 'Hawaii' },
-  { city: 'Aiken', state: 'South Carolina' }, { city: 'Air Force Academy', state: 'Colorado' },
-  { city: 'Airmont', state: 'New York' }, { city: 'Akron', state: 'Ohio' },
-  { city: 'Alabaster', state: 'Alabama' }, { city: 'Alachua', state: 'Florida' },
-  { city: 'Alameda', state: 'California' }, { city: 'Alamo', state: 'California' },
-  { city: 'Alamo', state: 'Texas' }, { city: 'Alamo Heights', state: 'Texas' },
-  { city: 'Alamogordo', state: 'New Mexico' }, { city: 'Alamosa', state: 'Colorado' },
-  { city: 'Albany', state: 'Georgia' }, { city: 'Albany', state: 'California' },
-  { city: 'Albany', state: 'New York' }, { city: 'Albany', state: 'Oregon' },
-  { city: 'Albemarle', state: 'North Carolina' }, { city: 'Albert Lea', state: 'Minnesota' },
-  { city: 'Albertville', state: 'Alabama' }, { city: 'Albion', state: 'Michigan' },
-  { city: 'Albion', state: 'New York' }, { city: 'Albuquerque', state: 'New Mexico' },
-  { city: 'Alcoa', state: 'Tennessee' }, { city: 'Alden', state: 'New York' },
-  { city: 'Alderwood Manor', state: 'Washington' }, { city: 'Aldine', state: 'Texas' },
-  { city: 'Alexander City', state: 'Alabama' }, { city: 'Alexandria', state: 'Indiana' },
-  { city: 'Alexandria', state: 'Minnesota' }, { city: 'Alexandria', state: 'Kentucky' },
-  { city: 'Alexandria', state: 'Louisiana' }, { city: 'Alexandria', state: 'Virginia' },
-  { city: 'Algonquin', state: 'Illinois' }, { city: 'Alhambra', state: 'California' },
-  { city: 'Alice', state: 'Texas' }, { city: 'Aliquippa', state: 'Pennsylvania' },
-  { city: 'Aliso Viejo', state: 'California' }, { city: 'Allegany', state: 'New York' },
-  { city: 'Allen', state: 'Texas' }, { city: 'Allen Park', state: 'Michigan' },
-  { city: 'Allendale', state: 'Michigan' }, { city: 'Allendale', state: 'New Jersey' },
-  { city: 'Allentown', state: 'Pennsylvania' }, { city: 'Alliance', state: 'Ohio' },
-  { city: 'Alliance', state: 'Nebraska' }, { city: 'Allouez', state: 'Wisconsin' },
-  { city: 'Alma', state: 'Michigan' }, { city: 'Aloha', state: 'Oregon' },
-  { city: 'Alondra Park', state: 'California' }, { city: 'Alpena', state: 'Michigan' },
-  { city: 'Alpharetta', state: 'Georgia' }, { city: 'Alpine', state: 'California' },
-  { city: 'Alpine', state: 'Utah' }, { city: 'Alsip', state: 'Illinois' },
-  { city: 'Alta Sierra', state: 'California' }, { city: 'Altadena', state: 'California' },
-  { city: 'Altamont', state: 'Oregon' }, { city: 'Altamont', state: 'New York' },
-  { city: 'Altamonte Springs', state: 'Florida' }, { city: 'Alton', state: 'Illinois' },
-  { city: 'Altoona', state: 'Iowa' }, { city: 'Altoona', state: 'Pennsylvania' },
-  { city: 'Altoona', state: 'Wisconsin' }, { city: 'Altus', state: 'Oklahoma' },
-  { city: 'Alum Rock', state: 'California' }, { city: 'Alvin', state: 'Texas' },
-  { city: 'Amarillo', state: 'Texas' }, { city: 'Ambler', state: 'Pennsylvania' },
-  { city: 'Ambridge', state: 'Pennsylvania' }, { city: 'American Canyon', state: 'California' },
-  { city: 'American Fork', state: 'Utah' }, { city: 'Americus', state: 'Georgia' },
-  { city: 'Ames', state: 'Iowa' }, { city: 'Amesbury', state: 'Massachusetts' },
-  { city: 'Amherst', state: 'New Hampshire' }, { city: 'Amherst', state: 'Massachusetts' },
-  { city: 'Amherst', state: 'Ohio' }, { city: 'Amherst', state: 'New York' },
-  { city: 'Amityville', state: 'New York' }, { city: 'Ammon', state: 'Idaho' },
-  { city: 'Amory', state: 'Mississippi' }, { city: 'Amsterdam', state: 'New York' },
-  { city: 'Anacortes', state: 'Washington' }, { city: 'Anadarko', state: 'Oklahoma' },
-  { city: 'Anaheim', state: 'California' }, { city: 'Anchorage', state: 'Alaska' },
-  { city: 'Andalusia', state: 'Alabama' }, { city: 'Anderson', state: 'California' },
-  { city: 'Anderson', state: 'Indiana' }, { city: 'Anderson', state: 'South Carolina' },
-  { city: 'Andover', state: 'Minnesota' }, { city: 'Andover', state: 'Massachusetts' },
-  { city: 'Andover', state: 'Kansas' }, { city: 'Andrews', state: 'Texas' },
-  { city: 'Angleton', state: 'Texas' }, { city: 'Angola', state: 'Indiana' },
-  { city: 'Ankeny', state: 'Iowa' }, { city: 'Ann Arbor', state: 'Michigan' },
-  { city: 'Annandale', state: 'Virginia' }, { city: 'Annapolis', state: 'Maryland' },
-  { city: 'Anniston', state: 'Alabama' }, { city: 'Anoka', state: 'Minnesota' },
-  { city: 'Ansonia', state: 'Connecticut' }, { city: 'Anthony', state: 'New Mexico' },
-  { city: 'Antigo', state: 'Wisconsin' }, { city: 'Antioch', state: 'Illinois' },
-  { city: 'Antioch', state: 'California' }, { city: 'Apache Junction', state: 'Arizona' },
-  { city: 'Apex', state: 'North Carolina' }, { city: 'Apopka', state: 'Florida' },
-  { city: 'Apple Valley', state: 'California' }, { city: 'Apple Valley', state: 'Minnesota' },
-  { city: 'Appleton', state: 'Wisconsin' }, { city: 'Aptos', state: 'California' },
-  { city: 'Arab', state: 'Alabama' }, { city: 'Aransas Pass', state: 'Texas' },
-  { city: 'Arbutus', state: 'Maryland' }, { city: 'Arcadia', state: 'California' },
-  { city: 'Arcadia', state: 'Florida' }, { city: 'Arcata', state: 'California' },
-  { city: 'Archdale', state: 'North Carolina' }, { city: 'Arden Hills', state: 'Minnesota' },
-  { city: 'Ardmore', state: 'Oklahoma' }, { city: 'Ardmore', state: 'Pennsylvania' },
-  { city: 'Arkadelphia', state: 'Arkansas' }, { city: 'Arlington', state: 'Massachusetts' },
-  { city: 'Arlington', state: 'Texas' }, { city: 'Arlington', state: 'New York' },
-  { city: 'Arlington', state: 'Virginia' }, { city: 'Arlington', state: 'Washington' },
-  { city: 'Arlington Heights', state: 'Illinois' }, { city: 'Arnold', state: 'Missouri' },
-  { city: 'Arnold', state: 'Maryland' }, { city: 'Arroyo Grande', state: 'California' },
-  { city: 'Artesia', state: 'California' }, { city: 'Artesia', state: 'New Mexico' },
-  { city: 'Arvada', state: 'Colorado' }, { city: 'Arvin', state: 'California' },
-  { city: 'Asbury Park', state: 'New Jersey' }, { city: 'Asheboro', state: 'North Carolina' },
-  { city: 'Asheville', state: 'North Carolina' }, { city: 'Ashland', state: 'Oregon' },
-  { city: 'Ashland', state: 'Ohio' }, { city: 'Ashland', state: 'Virginia' },
-  { city: 'Ashland', state: 'Wisconsin' }, { city: 'Ashland', state: 'Massachusetts' },
-  { city: 'Ashland', state: 'Kentucky' }, { city: 'Ashtabula', state: 'Ohio' },
-  { city: 'Astoria', state: 'Oregon' }, { city: 'Atascadero', state: 'California' },
-  { city: 'Atchison', state: 'Kansas' }, { city: 'Athens', state: 'Alabama' },
-  { city: 'Athens', state: 'Texas' }, { city: 'Athens', state: 'Tennessee' },
-  { city: 'Athens', state: 'Ohio' }, { city: 'Atherton', state: 'California' },
-  { city: 'Atlanta', state: 'Georgia' }, { city: 'Atlantic', state: 'Iowa' },
-  { city: 'Atlantic Beach', state: 'Florida' }, { city: 'Atlantic City', state: 'New Jersey' },
-  { city: 'Atmore', state: 'Alabama' }, { city: 'Attalla', state: 'Alabama' },
-  { city: 'Attica', state: 'New York' }, { city: 'Attleboro', state: 'Massachusetts' },
-  { city: 'Atwater', state: 'California' }, { city: 'Auburn', state: 'California' },
-  { city: 'Auburn', state: 'Alabama' }, { city: 'Auburn', state: 'Georgia' },
-  { city: 'Auburn', state: 'Indiana' }, { city: 'Auburn', state: 'Massachusetts' },
-  { city: 'Auburn', state: 'Maine' }, { city: 'Auburn', state: 'New York' },
-  { city: 'Auburn', state: 'Washington' }, { city: 'Auburn Hills', state: 'Michigan' },
-  { city: 'Auburndale', state: 'Florida' }, { city: 'Audubon', state: 'New Jersey' },
-  { city: 'Augusta', state: 'Maine' }, { city: 'Augusta', state: 'Kansas' },
-  { city: 'Aurora', state: 'Illinois' }, { city: 'Aurora', state: 'Colorado' },
-  { city: 'Aurora', state: 'Missouri' }, { city: 'Aurora', state: 'New York' },
-  { city: 'Aurora', state: 'Ohio' }, { city: 'Austin', state: 'Texas' },
-  { city: 'Austin', state: 'Minnesota' }, { city: 'Austintown', state: 'Ohio' },
-  { city: 'Avenal', state: 'California' }, { city: 'Aventura', state: 'Florida' },
-  { city: 'Avon', state: 'Connecticut' }, { city: 'Avon', state: 'Indiana' },
-  { city: 'Avon', state: 'Ohio' }, { city: 'Avon', state: 'New York' },
-  { city: 'Avon Lake', state: 'Ohio' }, { city: 'Avon Park', state: 'Florida' },
-  { city: 'Avondale', state: 'Arizona' }, { city: 'Ayer', state: 'Massachusetts' },
-  { city: 'Azle', state: 'Texas' }, { city: 'Aztec', state: 'New Mexico' },
-  { city: 'Azusa', state: 'California' }, { city: 'Babylon', state: 'New York' },
-  { city: 'Bainbridge', state: 'Georgia' }, { city: 'Bainbridge Island', state: 'Washington' },
-  { city: 'Baker', state: 'Louisiana' }, { city: 'Bakersfield', state: 'California' },
-  { city: 'Balch Springs', state: 'Texas' }, { city: 'Baldwin', state: 'Pennsylvania' },
-  { city: 'Baldwin', state: 'New York' }, { city: 'Baldwin Park', state: 'California' },
-  { city: 'Baldwinsville', state: 'New York' }, { city: 'Ballwin', state: 'Missouri' },
-  { city: 'Baltimore', state: 'Maryland' }, { city: 'Bangor', state: 'Maine' },
-  { city: 'Banning', state: 'California' }, { city: 'Baraboo', state: 'Wisconsin' },
-  { city: 'Barberton', state: 'Ohio' }, { city: 'Bardstown', state: 'Kentucky' },
-  { city: 'Barnstable Town', state: 'Massachusetts' }, { city: 'Barre', state: 'Vermont' },
-  { city: 'Barrington', state: 'Rhode Island' }, { city: 'Barrington', state: 'New Jersey' },
-  { city: 'Barrington', state: 'New Hampshire' }, { city: 'Barrington', state: 'Illinois' },
-  { city: 'Barstow', state: 'California' }, { city: 'Bartlesville', state: 'Oklahoma' },
-  { city: 'Bartlett', state: 'Illinois' }, { city: 'Bartlett', state: 'Tennessee' },
-  { city: 'Bartow', state: 'Florida' }, { city: 'Bastrop', state: 'Louisiana' },
-  { city: 'Batavia', state: 'Illinois' }, { city: 'Batavia', state: 'New York' },
-  { city: 'Batesville', state: 'Mississippi' }, { city: 'Batesville', state: 'Indiana' },
-  { city: 'Batesville', state: 'Arkansas' }, { city: 'Bath', state: 'Maine' },
-  { city: 'Bath', state: 'New York' }, { city: 'Baton Rouge', state: 'Louisiana' },
-  { city: 'Battle Creek', state: 'Michigan' }, { city: 'Battle Ground', state: 'Washington' },
-  { city: 'Bay City', state: 'Texas' }, { city: 'Bay City', state: 'Michigan' },
-  { city: 'Bay Shore', state: 'New York' }, { city: 'Bay Village', state: 'Ohio' },
-  { city: 'Bayonne', state: 'New Jersey' }, { city: 'Baytown', state: 'Texas' },
-  { city: 'Beachwood', state: 'Ohio' }, { city: 'Beacon', state: 'New York' },
-  { city: 'Beatrice', state: 'Nebraska' }, { city: 'Beaufort', state: 'South Carolina' },
-  { city: 'Beaumont', state: 'Texas' }, { city: 'Beaumont', state: 'California' },
-  { city: 'Beaver Dam', state: 'Wisconsin' }, { city: 'Beaver Falls', state: 'Pennsylvania' },
-  { city: 'Beavercreek', state: 'Ohio' }, { city: 'Beaverton', state: 'Oregon' },
-  { city: 'Beckley', state: 'West Virginia' }, { city: 'Bedford', state: 'Virginia' },
-  { city: 'Bedford', state: 'Texas' }, { city: 'Bedford', state: 'Ohio' },
-  { city: 'Bedford', state: 'New Hampshire' }, { city: 'Bedford', state: 'Indiana' },
-  { city: 'Beech Grove', state: 'Indiana' }, { city: 'Beeville', state: 'Texas' },
-  { city: 'Bel Air', state: 'Maryland' }, { city: 'Belen', state: 'New Mexico' },
-  { city: 'Belfast', state: 'Maine' }, { city: 'Bell', state: 'California' },
-  { city: 'Bell Gardens', state: 'California' }, { city: 'Bellaire', state: 'Texas' },
-  { city: 'Belle Glade', state: 'Florida' }, { city: 'Bellefontaine', state: 'Ohio' },
-  { city: 'Belleville', state: 'New Jersey' }, { city: 'Belleville', state: 'Illinois' },
-  { city: 'Bellevue', state: 'Kentucky' }, { city: 'Bellevue', state: 'Nebraska' },
-  { city: 'Bellevue', state: 'Ohio' }, { city: 'Bellevue', state: 'Washington' },
-  { city: 'Bellflower', state: 'California' }, { city: 'Bellingham', state: 'Massachusetts' },
-  { city: 'Bellingham', state: 'Washington' }, { city: 'Bellmawr', state: 'New Jersey' },
-  { city: 'Bellwood', state: 'Illinois' }, { city: 'Belmont', state: 'Massachusetts' },
-  { city: 'Belmont', state: 'North Carolina' }, { city: 'Belmont', state: 'California' },
-  { city: 'Beloit', state: 'Wisconsin' }, { city: 'Belton', state: 'Missouri' },
-  { city: 'Belton', state: 'Texas' }, { city: 'Beltsville', state: 'Maryland' },
-  { city: 'Belvidere', state: 'Illinois' }, { city: 'Bemidji', state: 'Minnesota' },
-  { city: 'Benbrook', state: 'Texas' }, { city: 'Bend', state: 'Oregon' },
-  { city: 'Benicia', state: 'California' }, { city: 'Bennington', state: 'Vermont' },
-  { city: 'Bensenville', state: 'Illinois' }, { city: 'Benton', state: 'Arkansas' },
-  { city: 'Benton Harbor', state: 'Michigan' }, { city: 'Bentonville', state: 'Arkansas' },
-  { city: 'Berea', state: 'Kentucky' }, { city: 'Berea', state: 'Ohio' },
-  { city: 'Bergenfield', state: 'New Jersey' }, { city: 'Berkeley', state: 'Missouri' },
-  { city: 'Berkeley', state: 'California' }, { city: 'Berkley', state: 'Michigan' },
-  { city: 'Berlin', state: 'Connecticut' }, { city: 'Berlin', state: 'New Jersey' },
-  { city: 'Berlin', state: 'New Hampshire' }, { city: 'Bernalillo', state: 'New Mexico' },
-  { city: 'Berwick', state: 'Pennsylvania' }, { city: 'Berwyn', state: 'Illinois' },
-  { city: 'Bessemer', state: 'Alabama' }, { city: 'Bethany', state: 'Oklahoma' },
-  { city: 'Bethel', state: 'Connecticut' }, { city: 'Bethel Park', state: 'Pennsylvania' },
-  { city: 'Bethesda', state: 'Maryland' }, { city: 'Bethlehem', state: 'Pennsylvania' },
-  { city: 'Bettendorf', state: 'Iowa' }, { city: 'Beverly', state: 'Massachusetts' },
-  { city: 'Beverly Hills', state: 'California' }, { city: 'Bexley', state: 'Ohio' },
-  { city: 'Biddeford', state: 'Maine' }, { city: 'Big Spring', state: 'Texas' },
-  { city: 'Billerica', state: 'Massachusetts' }, { city: 'Billings', state: 'Montana' },
-  { city: 'Biloxi', state: 'Mississippi' }, { city: 'Binghamton', state: 'New York' },
-  { city: 'Birmingham', state: 'Michigan' }, { city: 'Birmingham', state: 'Alabama' },
-  { city: 'Bisbee', state: 'Arizona' }, { city: 'Bismarck', state: 'North Dakota' },
-  { city: 'Blacksburg', state: 'Virginia' }, { city: 'Bloomfield', state: 'New Jersey' },
-  { city: 'Bloomfield', state: 'New Mexico' }, { city: 'Bloomfield', state: 'Connecticut' },
-  { city: 'Bloomingdale', state: 'Illinois' }, { city: 'Bloomington', state: 'Illinois' },
-  { city: 'Bloomington', state: 'Indiana' }, { city: 'Bloomington', state: 'California' },
-  { city: 'Bloomington', state: 'Minnesota' }, { city: 'Bloomsburg', state: 'Pennsylvania' },
-  { city: 'Blue Ash', state: 'Ohio' }, { city: 'Blue Island', state: 'Illinois' },
-  { city: 'Blue Springs', state: 'Missouri' }, { city: 'Bluefield', state: 'West Virginia' },
-  { city: 'Blytheville', state: 'Arkansas' }, { city: 'Boardman', state: 'Ohio' },
-  { city: 'Boca Raton', state: 'Florida' }, { city: 'Boerne', state: 'Texas' },
-  { city: 'Bogalusa', state: 'Louisiana' }, { city: 'Boise', state: 'Idaho' },
-  { city: 'Bolingbrook', state: 'Illinois' }, { city: 'Bolivar', state: 'Missouri' },
-  { city: 'Bonham', state: 'Texas' }, { city: 'Bonita Springs', state: 'Florida' },
-  { city: 'Bonner Springs', state: 'Kansas' }, { city: 'Bonney Lake', state: 'Washington' },
-  { city: 'Boone', state: 'Iowa' }, { city: 'Boone', state: 'North Carolina' },
-  { city: 'Boonton', state: 'New Jersey' }, { city: 'Borger', state: 'Texas' },
-  { city: 'Bossier City', state: 'Louisiana' }, { city: 'Boston', state: 'Massachusetts' },
-  { city: 'Bothell', state: 'Washington' }, { city: 'Boulder', state: 'Colorado' },
-  { city: 'Boulder City', state: 'Nevada' }, { city: 'Bountiful', state: 'Utah' },
-  { city: 'Bourbonnais', state: 'Illinois' }, { city: 'Bourne', state: 'Massachusetts' },
-  { city: 'Bowie', state: 'Maryland' }, { city: 'Bowling Green', state: 'Kentucky' },
-  { city: 'Bowling Green', state: 'Ohio' }, { city: 'Boynton Beach', state: 'Florida' },
-  { city: 'Bozeman', state: 'Montana' }, { city: 'Bradenton', state: 'Florida' },
-  { city: 'Bradford', state: 'Pennsylvania' }, { city: 'Bradley', state: 'Illinois' },
-  { city: 'Brainerd', state: 'Minnesota' }, { city: 'Braintree', state: 'Massachusetts' },
-  { city: 'Brandon', state: 'Mississippi' }, { city: 'Brandon', state: 'Florida' },
-  { city: 'Branford', state: 'Connecticut' }, { city: 'Branson', state: 'Missouri' },
-  { city: 'Brattleboro', state: 'Vermont' }, { city: 'Brawley', state: 'California' },
-  { city: 'Brazil', state: 'Indiana' }, { city: 'Brea', state: 'California' },
-  { city: 'Brecksville', state: 'Ohio' }, { city: 'Bremerton', state: 'Washington' },
-  { city: 'Brenham', state: 'Texas' }, { city: 'Brentwood', state: 'California' },
-  { city: 'Brentwood', state: 'New York' }, { city: 'Brentwood', state: 'Missouri' },
-  { city: 'Brentwood', state: 'Tennessee' }, { city: 'Brevard', state: 'North Carolina' },
-  { city: 'Brewer', state: 'Maine' }, { city: 'Bridgeport', state: 'West Virginia' },
-  { city: 'Bridgeport', state: 'Connecticut' }, { city: 'Bridgeton', state: 'Missouri' },
-  { city: 'Bridgeton', state: 'New Jersey' }, { city: 'Bridgeview', state: 'Illinois' },
-  { city: 'Bridgewater', state: 'Massachusetts' }, { city: 'Brigham City', state: 'Utah' },
-  { city: 'Brighton', state: 'Michigan' }, { city: 'Brighton', state: 'Colorado' },
-  { city: 'Bristol', state: 'Connecticut' }, { city: 'Bristol', state: 'Rhode Island' },
-  { city: 'Bristol', state: 'Tennessee' }, { city: 'Bristol', state: 'Virginia' },
-  { city: 'Bristol', state: 'Pennsylvania' }, { city: 'Broadview Heights', state: 'Ohio' },
-  { city: 'Brockton', state: 'Massachusetts' }, { city: 'Broken Arrow', state: 'Oklahoma' },
-  { city: 'Brookfield', state: 'Wisconsin' }, { city: 'Brookhaven', state: 'Mississippi' },
-  { city: 'Brookings', state: 'South Dakota' }, { city: 'Brookline', state: 'Massachusetts' },
-  { city: 'Brooklyn Center', state: 'Minnesota' }, { city: 'Brooklyn Park', state: 'Minnesota' },
-  { city: 'Brooksville', state: 'Florida' }, { city: 'Broomfield', state: 'Colorado' },
-  { city: 'Brownsburg', state: 'Indiana' }, { city: 'Brownsville', state: 'Texas' },
-  { city: 'Brownsville', state: 'Tennessee' }, { city: 'Brownwood', state: 'Texas' },
-  { city: 'Brunswick', state: 'Maine' }, { city: 'Brunswick', state: 'Georgia' },
-  { city: 'Brunswick', state: 'Ohio' }, { city: 'Bryan', state: 'Texas' },
-  { city: 'Bryan', state: 'Ohio' }, { city: 'Buckeye', state: 'Arizona' },
-  { city: 'Buena Park', state: 'California' }, { city: 'Buffalo', state: 'Minnesota' },
-  { city: 'Buffalo', state: 'New York' }, { city: 'Buffalo Grove', state: 'Illinois' },
-  { city: 'Buford', state: 'Georgia' }, { city: 'Burbank', state: 'California' },
-  { city: 'Burbank', state: 'Illinois' }, { city: 'Burien', state: 'Washington' },
-  { city: 'Burke', state: 'Virginia' }, { city: 'Burleson', state: 'Texas' },
-  { city: 'Burlingame', state: 'California' }, { city: 'Burlington', state: 'Kentucky' },
-  { city: 'Burlington', state: 'Iowa' }, { city: 'Burlington', state: 'North Carolina' },
-  { city: 'Burlington', state: 'Massachusetts' }, { city: 'Burlington', state: 'New Jersey' },
-  { city: 'Burlington', state: 'Vermont' }, { city: 'Burlington', state: 'Washington' },
-  { city: 'Burlington', state: 'Wisconsin' }, { city: 'Burnsville', state: 'Minnesota' },
-  { city: 'Burton', state: 'Michigan' }, { city: 'Butler', state: 'Pennsylvania' },
-  { city: 'Cabot', state: 'Arkansas' }, { city: 'Cadillac', state: 'Michigan' },
-  { city: 'Calexico', state: 'California' }, { city: 'Calhoun', state: 'Georgia' },
-  { city: 'Calimesa', state: 'California' }, { city: 'Camarillo', state: 'California' },
-  { city: 'Camas', state: 'Washington' }, { city: 'Cambridge', state: 'Maryland' },
-  { city: 'Cambridge', state: 'Massachusetts' }, { city: 'Cambridge', state: 'Ohio' },
-  { city: 'Camden', state: 'South Carolina' }, { city: 'Camden', state: 'New Jersey' },
-  { city: 'Camden', state: 'Arkansas' }, { city: 'Cameron', state: 'Missouri' },
-  { city: 'Campbell', state: 'California' }, { city: 'Campbell', state: 'Ohio' },
-  { city: 'Canby', state: 'Oregon' }, { city: 'Canfield', state: 'Ohio' },
-  { city: 'Canon City', state: 'Colorado' }, { city: 'Canonsburg', state: 'Pennsylvania' },
-  { city: 'Canton', state: 'Ohio' }, { city: 'Canton', state: 'Georgia' },
-  { city: 'Canton', state: 'Illinois' }, { city: 'Canton', state: 'Mississippi' },
-  { city: 'Canton', state: 'Massachusetts' }, { city: 'Canton', state: 'Michigan' },
-  { city: 'Canyon', state: 'Texas' }, { city: 'Cape Canaveral', state: 'Florida' },
-  { city: 'Cape Coral', state: 'Florida' }, { city: 'Cape Girardeau', state: 'Missouri' },
-  { city: 'Capitola', state: 'California' }, { city: 'Carbondale', state: 'Illinois' },
-  { city: 'Caribou', state: 'Maine' }, { city: 'Carlisle', state: 'Pennsylvania' },
-  { city: 'Carlsbad', state: 'New Mexico' }, { city: 'Carlsbad', state: 'California' },
-  { city: 'Carmel', state: 'Indiana' }, { city: 'Carmichael', state: 'California' },
-  { city: 'Carnegie', state: 'Pennsylvania' }, { city: 'Carol Stream', state: 'Illinois' },
-  { city: 'Carpentersville', state: 'Illinois' }, { city: 'Carpinteria', state: 'California' },
-  { city: 'Carrboro', state: 'North Carolina' }, { city: 'Carroll', state: 'Iowa' },
-  { city: 'Carrollton', state: 'Georgia' }, { city: 'Carrollton', state: 'Texas' },
-  { city: 'Carson', state: 'California' }, { city: 'Carson City', state: 'Nevada' },
-  { city: 'Carteret', state: 'New Jersey' }, { city: 'Cartersville', state: 'Georgia' },
-  { city: 'Carthage', state: 'Missouri' }, { city: 'Cary', state: 'Illinois' },
-  { city: 'Cary', state: 'North Carolina' }, { city: 'Casa Grande', state: 'Arizona' },
-  { city: 'Casper', state: 'Wyoming' }, { city: 'Casselberry', state: 'Florida' },
-  { city: 'Castle Rock', state: 'Colorado' }, { city: 'Castro Valley', state: 'California' },
-  { city: 'Catalina Foothills', state: 'Arizona' }, { city: 'Catonsville', state: 'Maryland' },
-  { city: 'Cedar City', state: 'Utah' }, { city: 'Cedar Falls', state: 'Iowa' },
-  { city: 'Cedar Hill', state: 'Texas' }, { city: 'Cedar Park', state: 'Texas' },
-  { city: 'Cedar Rapids', state: 'Iowa' }, { city: 'Cedarburg', state: 'Wisconsin' },
-  { city: 'Celina', state: 'Ohio' }, { city: 'Centerville', state: 'Ohio' },
-  { city: 'Centerville', state: 'Utah' }, { city: 'Central Falls', state: 'Rhode Island' },
-  { city: 'Centralia', state: 'Washington' }, { city: 'Centralia', state: 'Illinois' },
-  { city: 'Centreville', state: 'Virginia' }, { city: 'Ceres', state: 'California' },
-  { city: 'Cerritos', state: 'California' }, { city: 'Chalmette', state: 'Louisiana' },
-  { city: 'Chambersburg', state: 'Pennsylvania' }, { city: 'Chamblee', state: 'Georgia' },
-  { city: 'Champaign', state: 'Illinois' }, { city: 'Champlin', state: 'Minnesota' },
-  { city: 'Chandler', state: 'Arizona' }, { city: 'Chanhassen', state: 'Minnesota' },
-  { city: 'Channelview', state: 'Texas' }, { city: 'Chantilly', state: 'Virginia' },
-  { city: 'Chanute', state: 'Kansas' }, { city: 'Chapel Hill', state: 'North Carolina' },
-  { city: 'Charleston', state: 'Illinois' }, { city: 'Charleston', state: 'West Virginia' },
-  { city: 'Charleston', state: 'South Carolina' }, { city: 'Charlotte', state: 'North Carolina' },
-  { city: 'Charlotte', state: 'Michigan' }, { city: 'Charlottesville', state: 'Virginia' },
-  { city: 'Chaska', state: 'Minnesota' }, { city: 'Chattanooga', state: 'Tennessee' },
-  { city: 'Cheektowaga', state: 'New York' }, { city: 'Chehalis', state: 'Washington' },
-  { city: 'Chelmsford', state: 'Massachusetts' }, { city: 'Chelsea', state: 'Massachusetts' },
-  { city: 'Cheney', state: 'Washington' }, { city: 'Chesapeake', state: 'Virginia' },
-  { city: 'Cheshire', state: 'Connecticut' }, { city: 'Chester', state: 'Virginia' },
-  { city: 'Chester', state: 'South Carolina' }, { city: 'Chester', state: 'Pennsylvania' },
-  { city: 'Chesterfield', state: 'Missouri' }, { city: 'Chesterton', state: 'Indiana' },
-  { city: 'Cheverly', state: 'Maryland' }, { city: 'Chevy Chase', state: 'Maryland' },
-  { city: 'Cheyenne', state: 'Wyoming' }, { city: 'Chicago', state: 'Illinois' },
-  { city: 'Chicago Heights', state: 'Illinois' }, { city: 'Chickasha', state: 'Oklahoma' },
-  { city: 'Chico', state: 'California' }, { city: 'Chicopee', state: 'Massachusetts' },
-  { city: 'Chillicothe', state: 'Missouri' }, { city: 'Chillicothe', state: 'Ohio' },
-  { city: 'Chino', state: 'California' }, { city: 'Chino Hills', state: 'California' },
-  { city: 'Chino Valley', state: 'Arizona' }, { city: 'Chippewa Falls', state: 'Wisconsin' },
-  { city: 'Choctaw', state: 'Oklahoma' }, { city: 'Christiansburg', state: 'Virginia' },
-  { city: 'Chubbuck', state: 'Idaho' }, { city: 'Chula Vista', state: 'California' },
-  { city: 'Cicero', state: 'Illinois' }, { city: 'Cincinnati', state: 'Ohio' },
-  { city: 'Circleville', state: 'Ohio' }, { city: 'Citrus Heights', state: 'California' },
-  { city: 'Claremont', state: 'California' }, { city: 'Claremont', state: 'New Hampshire' },
-  { city: 'Claremore', state: 'Oklahoma' }, { city: 'Clarksburg', state: 'West Virginia' },
-  { city: 'Clarksdale', state: 'Mississippi' }, { city: 'Clarkston', state: 'Georgia' },
-  { city: 'Clarksville', state: 'Indiana' }, { city: 'Clarksville', state: 'Arkansas' },
-  { city: 'Clarksville', state: 'Tennessee' }, { city: 'Clayton', state: 'California' },
-  { city: 'Clayton', state: 'Missouri' }, { city: 'Clayton', state: 'North Carolina' },
-  { city: 'Clearfield', state: 'Utah' }, { city: 'Clearlake', state: 'California' },
-  { city: 'Clearwater', state: 'Florida' }, { city: 'Cleburne', state: 'Texas' },
-  { city: 'Clemson', state: 'South Carolina' }, { city: 'Clermont', state: 'Florida' },
-  { city: 'Cleveland', state: 'Mississippi' }, { city: 'Cleveland', state: 'Tennessee' },
-  { city: 'Cleveland', state: 'Texas' }, { city: 'Cleveland', state: 'Ohio' },
-  { city: 'Cleveland Heights', state: 'Ohio' }, { city: 'Clifton', state: 'New Jersey' },
-  { city: 'Clifton', state: 'Colorado' }, { city: 'Clifton Park', state: 'New York' },
-  { city: 'Clinton', state: 'Mississippi' }, { city: 'Clinton', state: 'Missouri' },
-  { city: 'Clinton', state: 'Iowa' }, { city: 'Clinton', state: 'Maryland' },
-  { city: 'Clinton', state: 'Massachusetts' }, { city: 'Clinton', state: 'Connecticut' },
-  { city: 'Clinton', state: 'Illinois' }, { city: 'Clinton', state: 'Oklahoma' },
-  { city: 'Clinton', state: 'North Carolina' }, { city: 'Clinton', state: 'Tennessee' },
-  { city: 'Clinton', state: 'South Carolina' }, { city: 'Clinton', state: 'Utah' },
-  { city: 'Clive', state: 'Iowa' }, { city: 'Cloquet', state: 'Minnesota' },
-  { city: 'Cloverdale', state: 'California' },
-];
-
-const US_STATE_ABBRS = Object.values(STATE_ABBR).filter((v, i, arr) => arr.indexOf(v) === i).sort();
-
-
 
 // ---------------------------------------------------------------------------
 // COMBOBOX — shared search-or-pick control (drivers, parent loads, cities)
 // ---------------------------------------------------------------------------
 
-function Combobox({ options, value, onSelect, placeholder, emptyMessage, extraOption }) {
+function Combobox({ options, value, onSelect, placeholder, emptyMessage, extraOption, filter }) {
   const selected = options.find((o) => o.value === value);
   const [query, setQuery] = useState(selected ? selected.display : '');
   const [open, setOpen] = useState(false);
 
   const q = query.trim().toLowerCase();
-  const filtered = (q ? options.filter((o) => o.searchText.includes(q)) : options).slice(0, 8);
+  const filtered = filter
+    ? filter(options, query)
+    : (q ? options.filter((o) => o.searchText.includes(q)) : options).slice(0, 8);
   const rows = extraOption ? [...filtered, extraOption] : filtered;
 
   const handleSelect = (opt) => {
@@ -1278,7 +818,7 @@ function Combobox({ options, value, onSelect, placeholder, emptyMessage, extraOp
       />
       {open && (
         <div className="combobox-list">
-          {filtered.length === 0 && !extraOption && <div className="combobox-empty">{emptyMessage || 'No matches'}</div>}
+          {filtered.length === 0 && <div className="combobox-empty">{emptyMessage || 'No matches'}</div>}
           {rows.map((o) => (
             <div
               key={o.value}
@@ -1301,34 +841,39 @@ function CityField({ value, onChange, placeholder, customCities, onAddCustomCity
   const [newZip, setNewZip] = useState('');
   const [addError, setAddError] = useState('');
 
-  const hubOptions = usCities.map((c) => ({
-    value: `${c.city}, ${c.state}`,
-    label: `${c.city}, ${c.state} — ${c.zip}`,
-    display: `${c.city}, ${c.state}`,
-    searchText: `${c.city} ${c.state} ${c.zip}`.toLowerCase(),
-    key: `${c.city}, ${c.state}`,
-  }));
-  const hubKeys = new Set(hubOptions.map((o) => o.key));
+  const [usOptions, setUsOptions] = useState(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
-  const extraOptions = usCitiesExtra
-    .map((c) => {
-      const abbr = STATE_ABBR[c.state] || c.state;
-      return {
-        value: `${c.city}, ${abbr}`, label: `${c.city}, ${abbr}`, display: `${c.city}, ${abbr}`,
-        searchText: `${c.city} ${abbr} ${c.state}`.toLowerCase(), key: `${c.city}, ${abbr}`,
-      };
-    })
-    .filter((o) => !hubKeys.has(o.key));
+  useEffect(() => {
+    let alive = true;
+    loadUsCityOptions()
+      .then((opts) => { if (alive) setUsOptions(opts); })
+      .catch(() => { if (alive) { setLoadFailed(true); setUsOptions([]); } });
+    return () => { alive = false; };
+  }, []);
 
-  const customOptions = (customCities || []).map((c) => ({
-    value: `${c.city}, ${c.state}`,
-    label: `${c.city}, ${c.state} — ${c.zip}`,
-    display: `${c.city}, ${c.state}`,
-    searchText: `${c.city} ${c.state} ${c.zip}`.toLowerCase(),
-    key: `${c.city}, ${c.state}`,
-  }));
-
-  const options = [...customOptions, ...hubOptions, ...extraOptions];
+  const { options, selectedValue } = useMemo(() => {
+    if (!usOptions) return { options: null, selectedValue: value };
+    const merged = [...usOptions];
+    const index = new Map(merged.map((o, i) => [o.value, i]));
+    // Custom cities add their ZIP to a known city, or become a new entry.
+    const custom = [];
+    for (const c of customCities || []) {
+      const i = index.get(`${c.city}, ${c.state}`);
+      if (i === undefined) custom.push(cityOption(c.city, c.state, c.zip ? [c.zip] : []));
+      else if (c.zip && !merged[i].zips.includes(c.zip)) merged[i] = { ...merged[i], zips: [...merged[i].zips, c.zip] };
+    }
+    const all = [...custom, ...merged];
+    if (!value || all.some((o) => o.value === value)) return { options: all, selectedValue: value };
+    // A saved value from the old hand-made list: show it under today's spelling
+    // ("St. Louis, MO" -> "Saint Louis, MO"), or as is if the city is not listed.
+    const key = normalizeCityQuery(value);
+    const same = all.find((o) => o.searchText === key);
+    if (same) return { options: all, selectedValue: same.value };
+    const comma = value.lastIndexOf(',');
+    const legacy = comma < 0 ? cityOption(value, '', []) : cityOption(value.slice(0, comma).trim(), value.slice(comma + 1).trim(), []);
+    return { options: [legacy, ...all], selectedValue: legacy.value };
+  }, [usOptions, customCities, value]);
 
   const handleSelect = (val) => {
     if (val === '__add__') {
@@ -1376,13 +921,17 @@ function CityField({ value, onChange, placeholder, customCities, onAddCustomCity
     );
   }
 
+  // The Combobox reads the selected label once on mount, so wait for the list.
+  if (!options) return <input disabled placeholder="Loading US cities…" />;
+
   return (
     <Combobox
       options={options}
-      value={value}
+      value={selectedValue}
       onSelect={handleSelect}
       placeholder={placeholder}
-      emptyMessage="No matching US city or ZIP"
+      filter={filterCityOptions}
+      emptyMessage={loadFailed ? 'City list failed to load — refresh the page or add the city' : 'No matching US city or ZIP'}
       extraOption={{ value: '__add__', label: '+ Add a new city…', display: '', isAction: true }}
     />
   );

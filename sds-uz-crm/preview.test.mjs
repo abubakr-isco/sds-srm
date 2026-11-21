@@ -164,3 +164,23 @@ test('empty local preview fills itself with test loads once', async () => {
   await apiRequest('/dev/test-data', { method: 'POST', accessToken: admin.access_token, body: { action: 'clear' } });
   assert.equal((await apiTable('loads', admin.access_token).list()).length, 0);
 });
+
+test('US city list covers every state + DC with ZIPs and searches by name or ZIP', async () => {
+  const { loadUsCityOptions, filterCityOptions, US_STATE_ABBRS } = await import('./src/usCities.js');
+  const options = await loadUsCityOptions();
+  assert.equal(US_STATE_ABBRS.length, 51);
+  assert.deepEqual([...new Set(options.map((o) => o.value.slice(-2)))].sort(), US_STATE_ABBRS);
+  assert.ok(options.every((o) => o.zips.length && o.zips.every((z) => /^\d{5}$/.test(z))));
+
+  const label = (q) => filterCityOptions(options, q).map((o) => o.label);
+  assert.equal(label('dallas')[0], 'Dallas, TX — 75201');
+  assert.ok(label('st. louis').includes('Saint Louis, MO — 63101'));
+  assert.ok(label('mcallen').some((l) => l.startsWith('McAllen, TX')));
+  assert.deepEqual(label('10001'), ['New York, NY — 10001']);
+  const zip9950 = label('9950');
+  assert.ok(zip9950.length > 0 && zip9950.every((l) => / — 9950\d$/.test(l)));
+  assert.ok(label('st').some((l) => l.startsWith('Stockton, CA')));
+  assert.equal(label('ft worth')[0], 'Fort Worth, TX — 76101');
+  assert.ok(label('mt vernon').length > 0);
+  assert.ok(label('casper, wy')[0].startsWith('Casper, WY'));
+});
